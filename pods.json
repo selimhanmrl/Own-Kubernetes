@@ -1,0 +1,54 @@
+{
+  "7b118f4d-5626-4719-af34-1ce001553513": {
+    "metadata": {
+      "name": "sleepy",
+      "namespace": "",
+      "uid": "7b118f4d-5626-4719-af34-1ce001553513"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "nap",
+          "image": "alpine",
+          "cmd": [
+            "asd",
+            "1000"
+          ]
+        }
+      ],
+      "nodeName": "node2"
+    },
+    "status": {
+      "phase": "Failed",
+      "hostIP": "192.168.1.11",
+      "podIP": "",
+      "startTime": "2025-04-13T18:35:39+03:00"
+    }
+  },
+  "bbdbe4c8-03cb-4fd3-a127-867b5c1c1d49": {
+    "metadata": {
+      "name": "sleepy",
+      "namespace": "",
+      "uid": "bbdbe4c8-03cb-4fd3-a127-867b5c1c1d49"
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "nap",
+          "image": "alpine",
+          "cmd": [
+            "sleep",
+            "1000"
+          ]
+        }
+      ],
+      "nodeName": "node1"
+    },
+    "status": {
+      "phase": "Running",
+      "hostIP": "192.168.1.10",
+      "podIP": "",
+      "startTime": "2025-04-13T18:43:58+03:00"
+    }
+  }
+}

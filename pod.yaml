@@ -1,0 +1,7 @@
+metadata:
+  name: sleepy
+spec:
+  containers:
+    - name: nap
+      image: alpine
+      cmd: ["sleep", "1000"]

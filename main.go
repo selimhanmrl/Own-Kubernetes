@@ -1,9 +1,9 @@
 package main
 
 import (
-    "mykube/cmd"
+	"github.com/selimhanmrl/Own-Kubernetes/cmd"
 )
 
 func main() {
-    cmd.Execute()
+	cmd.Execute()
 }
