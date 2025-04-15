@@ -24,18 +24,29 @@ var applyCmd = &cobra.Command{
 			fmt.Println("❌ Failed to read file:", err)
 			return
 		}
-
+	
 		var pod models.Pod
 		if err := yaml.Unmarshal(data, &pod); err != nil {
 			fmt.Println("❌ Failed to parse YAML:", err)
 			return
 		}
-
+	
+		// Check if a pod with the same name already exists
+		existingPods := store.ListPods()
+		originalName := pod.Metadata.Name
+		suffix := 1
+		for _, existingPod := range existingPods {
+			if existingPod.Metadata.Name == pod.Metadata.Name {
+				pod.Metadata.Name = fmt.Sprintf("%s-%d", originalName, suffix)
+				suffix++
+			}
+		}
+	
 		pod.Metadata.UID = uuid.NewString()
 		pod.Status.Phase = "Pending"
 		pod.Status.StartTime = time.Now().Format("2006-01-02T15:04:05Z07:00")
 		store.SavePod(pod)
-
+	
 		out, _ := json.MarshalIndent(pod, "", "  ")
 		fmt.Println("✅ Pod created:")
 		fmt.Println(string(out))

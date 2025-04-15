@@ -42,45 +42,49 @@ func ListPods() []models.Pod {
 	}
 	return list
 }
+
+// DeletePodByName deletes a pod by its name and stops the corresponding Docker container if it exists.
 func DeletePodByName(name string) bool {
-	mu.Lock()
-	defer mu.Unlock()
+    mu.Lock()
+    defer mu.Unlock()
 
-	pods := loadAll()
+    pods := loadAll()
 
-	// Find the pod by name
-	var uid string
-	var pod models.Pod
-	found := false
-	for id, p := range pods {
-		if p.Metadata.Name == name {
-			uid = id
-			pod = p
-			found = true
-			break
-		}
-	}
+    // Find the pod by name
+    var uid string
+    var pod models.Pod
+    found := false
+    for id, p := range pods {
+        if p.Metadata.Name == name {
+            uid = id
+            pod = p
+            found = true
+            break
+        }
+    }
 
-	if !found {
-		return false // Pod not found
-	}
+    if !found {
+        fmt.Printf("❌ Pod with name '%s' not found.\n", name)
+        return false
+    }
 
-	// Check pod status before stopping the Docker container
-	if pod.Status.Phase != "Pending" && pod.Status.Phase != "Failed" {
-		// Stop the Docker container
-		containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, pod.Spec.Containers[0].Name)
-		err := exec.Command("docker", "stop", containerName).Run()
-		if err != nil {
-			fmt.Printf("❌ Failed to stop container '%s': %v\n", containerName, err)
-		}
-	} else {
-		fmt.Printf("⚠️ Pod '%s' is in '%s' state. Skipping Docker stop.\n", pod.Metadata.Name, pod.Status.Phase)
-	}
+    // Check pod status before stopping the Docker container
+    if pod.Status.Phase != "Pending" && pod.Status.Phase != "Failed" {
+        // Stop the Docker container
+        containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, pod.Spec.Containers[0].Name)
+        err := exec.Command("docker", "stop", containerName).Run()
+        if err != nil {
+            fmt.Printf("❌ Failed to stop container '%s': %v\n", containerName, err)
+        }
+    } else {
+        fmt.Printf("⚠️ Pod '%s' is in '%s' state. Skipping Docker stop.\n", pod.Metadata.Name, pod.Status.Phase)
+    }
 
-	// Remove the pod from the map
-	delete(pods, uid)
-	saveAll(pods) // Save the updated map to the file
-	return true
+    // Remove the pod from the map
+    delete(pods, uid)
+    saveAll(pods) // Save the updated map to the file
+    fmt.Printf("✅ Pod '%s' deleted successfully.\n", name)
+    return true
 }
 
 func ListNodes() []models.Node {

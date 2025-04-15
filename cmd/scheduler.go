@@ -23,21 +23,21 @@ var schedulerCmd = &cobra.Command{
 
 		for _, pod := range pods {
 			if pod.Status.Phase != "Pending" {
+				fmt.Printf("⚠️ Pod '%s' is in '%s' state. Skipping scheduling.\n", pod.Metadata.Name, pod.Status.Phase)
 				continue
 			}
 
-			// 1. Node seç
+			// Select a node
 			selected := nodes[rand.Intn(len(nodes))]
 			pod.Spec.NodeName = selected.Name
 			pod.Status.HostIP = selected.IP
 
-			// 2. Container çalıştır
-			container := pod.Spec.Containers[0]
-			containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, container.Name)
+			// Generate a unique container name
+			containerName := fmt.Sprintf("%s-%s-%s", pod.Metadata.Name, pod.Spec.Containers[0].Name, pod.Metadata.UID[:8])
 
-			args := []string{"run", "--rm", "-d", "--name", containerName, container.Image}
-			if len(container.Cmd) > 0 {
-				args = append(args, container.Cmd...)
+			args := []string{"run", "--rm", "-d", "--name", containerName, pod.Spec.Containers[0].Image}
+			if len(pod.Spec.Containers[0].Cmd) > 0 {
+				args = append(args, pod.Spec.Containers[0].Cmd...)
 			}
 
 			err := exec.Command("docker", args...).Run()
