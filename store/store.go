@@ -2,7 +2,9 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"sync"
 
 	"github.com/selimhanmrl/Own-Kubernetes/models"
@@ -39,6 +41,46 @@ func ListPods() []models.Pod {
 		list = append(list, pod)
 	}
 	return list
+}
+func DeletePodByName(name string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+
+	pods := loadAll()
+
+	// Find the pod by name
+	var uid string
+	var pod models.Pod
+	found := false
+	for id, p := range pods {
+		if p.Metadata.Name == name {
+			uid = id
+			pod = p
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return false // Pod not found
+	}
+
+	// Check pod status before stopping the Docker container
+	if pod.Status.Phase != "Pending" && pod.Status.Phase != "Failed" {
+		// Stop the Docker container
+		containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, pod.Spec.Containers[0].Name)
+		err := exec.Command("docker", "stop", containerName).Run()
+		if err != nil {
+			fmt.Printf("❌ Failed to stop container '%s': %v\n", containerName, err)
+		}
+	} else {
+		fmt.Printf("⚠️ Pod '%s' is in '%s' state. Skipping Docker stop.\n", pod.Metadata.Name, pod.Status.Phase)
+	}
+
+	// Remove the pod from the map
+	delete(pods, uid)
+	saveAll(pods) // Save the updated map to the file
+	return true
 }
 
 func ListNodes() []models.Node {
