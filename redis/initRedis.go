@@ -1,4 +1,4 @@
-package store
+package own_redis
 
 import (
 	"context"
@@ -7,8 +7,10 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-var RedisClient *redis.Client
-var ctx = context.Background()
+var (
+	RedisClient *redis.Client
+	Ctx         = context.Background() // Exported context
+)
 
 func InitRedis() {
 	RedisClient = redis.NewClient(&redis.Options{
@@ -17,7 +19,7 @@ func InitRedis() {
 		DB:       0,                // Default DB
 	})
 
-	_, err := RedisClient.Ping(ctx).Result()
+	_, err := RedisClient.Ping(Ctx).Result()
 	if err != nil {
 		log.Fatalf("❌ Failed to connect to Redis: %v", err)
 	}
