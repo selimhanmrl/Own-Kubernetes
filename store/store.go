@@ -1,12 +1,15 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/selimhanmrl/Own-Kubernetes/models"
 )
 
@@ -15,78 +18,119 @@ var (
 	storeFile = "pods.json"
 	nodeStore = []models.Node{
 		{Name: "node1", IP: "192.168.1.10"},
-		{Name: "node2", IP: "192.168.1.11"},
 	}
+
+	RedisClient *redis.Client
+	ctx         = context.Background()
 )
 
 func SavePod(pod models.Pod) {
-	mu.Lock()
-	defer mu.Unlock()
+	key := fmt.Sprintf("pods:%s", pod.Metadata.UID)
+	value, _ := json.Marshal(pod)
 
-	pods := loadAll()
-	pods[pod.Metadata.UID] = pod
-	saveAll(pods)
+	err := RedisClient.Set(ctx, key, value, 0).Err()
+	if err != nil {
+		fmt.Printf("❌ Failed to save pod '%s': %v\n", pod.Metadata.Name, err)
+		return
+	}
+	fmt.Printf("✅ Pod '%s' saved to Redis.\n", pod.Metadata.Name)
+	// Publish an event after saving the pod
+	PublishEvent("create", pod.Metadata.Name)
 }
 
 func GetPod(uid string) (models.Pod, bool) {
-	pods := loadAll()
-	pod, found := pods[uid]
-	return pod, found
+	key := fmt.Sprintf("pods:%s", uid)
+	value, err := RedisClient.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return models.Pod{}, false // Pod not found
+	} else if err != nil {
+		fmt.Printf("❌ Failed to get pod '%s': %v\n", uid, err)
+		return models.Pod{}, false
+	}
+
+	var pod models.Pod
+	json.Unmarshal([]byte(value), &pod)
+	return pod, true
+}
+
+func DeletePodByName(name string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// List all pods
+	pods := ListPods()
+
+	// Find the pod by name
+	var uid string
+	var pod models.Pod
+	found := false
+	for _, p := range pods {
+		if p.Metadata.Name == name {
+			uid = p.Metadata.UID
+			pod = p
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		fmt.Printf("❌ Pod with name '%s' not found.\n", name)
+		return false
+	}
+
+	// Stop the Docker container using the ContainerID
+	if pod.Status.Phase == "Running" && pod.Status.ContainerID != "" {
+		fmt.Printf("Stopping container with ID '%s'...\n", pod.Status.ContainerID)
+		err := exec.Command("docker", "stop", pod.Status.ContainerID).Run()
+		if err != nil {
+			fmt.Printf("❌ Failed to stop container '%s': %v\n", pod.Status.ContainerID, err)
+		} else {
+			fmt.Printf("✅ Stopped container with ID '%s'.\n", pod.Status.ContainerID)
+		}
+	}
+
+	// Delete the pod from Redis
+	key := fmt.Sprintf("pods:%s", uid)
+	err := RedisClient.Del(ctx, key).Err()
+	if err != nil {
+		fmt.Printf("❌ Failed to delete pod '%s': %v\n", name, err)
+		return false
+	}
+
+	fmt.Printf("✅ Pod '%s' deleted successfully.\n", name)
+	return true
 }
 
 func ListPods() []models.Pod {
-	pods := loadAll()
-	var list []models.Pod
-	for _, pod := range pods {
-		list = append(list, pod)
+	keys, err := RedisClient.Keys(ctx, "pods:*").Result()
+	if err != nil {
+		fmt.Printf("❌ Failed to list pods: %v\n", err)
+		return nil
 	}
-	return list
+
+	var pods []models.Pod
+	for _, key := range keys {
+		value, _ := RedisClient.Get(ctx, key).Result()
+		var pod models.Pod
+		json.Unmarshal([]byte(value), &pod)
+		pods = append(pods, pod)
+	}
+	return pods
 }
 
 // DeletePodByName deletes a pod by its name and stops the corresponding Docker container if it exists.
-func DeletePodByName(name string) bool {
-    mu.Lock()
-    defer mu.Unlock()
+func DeletePod(uid string) bool {
+	key := fmt.Sprintf("pods:%s", uid)
+	err := RedisClient.Del(ctx, key).Err()
+	if err != nil {
+		fmt.Printf("❌ Failed to delete pod '%s': %v\n", uid, err)
+		return false
+	}
+	fmt.Printf("✅ Pod '%s' deleted from Redis.\n", uid)
+	// Stop the Docker container if it exists
 
-    pods := loadAll()
-
-    // Find the pod by name
-    var uid string
-    var pod models.Pod
-    found := false
-    for id, p := range pods {
-        if p.Metadata.Name == name {
-            uid = id
-            pod = p
-            found = true
-            break
-        }
-    }
-
-    if !found {
-        fmt.Printf("❌ Pod with name '%s' not found.\n", name)
-        return false
-    }
-
-    // Check pod status before stopping the Docker container
-    if pod.Status.Phase != "Pending" && pod.Status.Phase != "Failed" {
-        // Stop the Docker container
-        containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, pod.Spec.Containers[0].Name)
-        err := exec.Command("docker", "stop", containerName).Run()
-        if err != nil {
-            fmt.Printf("❌ Failed to stop container '%s': %v\n", containerName, err)
-        }
-    } else {
-        fmt.Printf("⚠️ Pod '%s' is in '%s' state. Skipping Docker stop.\n", pod.Metadata.Name, pod.Status.Phase)
-    }
-
-    // Remove the pod from the map
-    delete(pods, uid)
-    saveAll(pods) // Save the updated map to the file
-    fmt.Printf("✅ Pod '%s' deleted successfully.\n", name)
-    return true
+	return true
 }
-
 func ListNodes() []models.Node {
 	mu.Lock()
 	defer mu.Unlock()
@@ -101,6 +145,24 @@ func AddNode(node models.Node) {
 	mu.Lock()
 	defer mu.Unlock()
 	nodeStore = append(nodeStore, node) // Append the new node to the slice
+}
+
+func PublishEvent(eventType, podName string) {
+	channel := "pods:events"
+	message := fmt.Sprintf("%s:%s", eventType, podName)
+	err := RedisClient.Publish(ctx, channel, message).Err()
+	if err != nil {
+		fmt.Printf("❌ Failed to publish event: %v\n", err)
+	}
+}
+
+func WatchPods() {
+	sub := RedisClient.Subscribe(ctx, "pods:events")
+	defer sub.Close()
+
+	for msg := range sub.Channel() {
+		fmt.Printf("🔄 Event received: %s\n", msg.Payload)
+	}
 }
 
 // ---------------------------
@@ -124,4 +186,18 @@ func loadAll() map[string]models.Pod {
 func saveAll(pods map[string]models.Pod) {
 	data, _ := json.MarshalIndent(pods, "", "  ")
 	_ = os.WriteFile(storeFile, data, 0644)
+}
+
+func InitRedis() {
+	RedisClient = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379", // Redis server address
+		Password: "",               // No password by default
+		DB:       0,                // Default DB
+	})
+
+	_, err := RedisClient.Ping(ctx).Result()
+	if err != nil {
+		log.Fatalf("❌ Failed to connect to Redis: %v", err)
+	}
+	log.Println("✅ Connected to Redis")
 }
