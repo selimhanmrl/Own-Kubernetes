@@ -31,16 +31,22 @@ var applyCmd = &cobra.Command{
 			return
 		}
 
-		// Check if a pod with the same name already exists
+		// Set namespace if not provided in the YAML
+		if pod.Metadata.Namespace == "" {
+			if namespace == "" {
+				namespace = "default" // Default to 'default' namespace
+			}
+			pod.Metadata.Namespace = namespace
+		}
 
+		// Check if a pod with the same name already exists
 		originalName := pod.Metadata.Name
 
 		pod.Metadata.UID = uuid.NewString()
 		pod.Status.Phase = "Pending"
 		pod.Status.StartTime = time.Now().Format("2006-01-02T15:04:05Z07:00")
-		store.SavePod(pod)
-
 		pod.Metadata.Name = fmt.Sprintf("%s-%s-%s", originalName, pod.Metadata.UID[:4], pod.Metadata.UID[4:8])
+		store.SavePod(pod)
 
 		out, _ := json.MarshalIndent(pod, "", "  ")
 		fmt.Println("✅ Pod created:")
@@ -50,5 +56,7 @@ var applyCmd = &cobra.Command{
 
 func init() {
 	applyCmd.Flags().StringVarP(&file, "file", "f", "", "YAML file to apply")
+	applyCmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Namespace to apply the pod to")
 	applyCmd.MarkFlagRequired("file")
+	rootCmd.AddCommand(applyCmd)
 }

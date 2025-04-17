@@ -25,15 +25,19 @@ func SavePod(pod models.Pod) {
 		log.Fatalf("❌ RedisClient is not initialized")
 	}
 
-	key := fmt.Sprintf("pods:%s", pod.Metadata.UID)
+	if pod.Metadata.Namespace == "" {
+		pod.Metadata.Namespace = "default" // Default to 'default' namespace
+	}
+
+	key := fmt.Sprintf("pods:%s:%s", pod.Metadata.Namespace, pod.Metadata.UID) // Include namespace in the key
 	value, _ := json.Marshal(pod)
 
-	err := own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err() // Use redis.Ctx
+	err := own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
 	if err != nil {
 		fmt.Printf("❌ Failed to save pod '%s': %v\n", pod.Metadata.Name, err)
 		return
 	}
-	fmt.Printf("✅ Pod '%s' saved to Redis.\n", pod.Metadata.Name)
+	fmt.Printf("✅ Pod '%s' saved to Redis in namespace '%s'.\n", pod.Metadata.Name, pod.Metadata.Namespace)
 }
 
 func GetPod(uid string) (models.Pod, bool) {
@@ -51,12 +55,16 @@ func GetPod(uid string) (models.Pod, bool) {
 	return pod, true
 }
 
-func DeletePodByName(name string) bool {
+func DeletePodByName(name string, namespace string) bool {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// List all pods
-	pods := ListPods()
+	if namespace == "" {
+		namespace = "default" // Default to 'default' namespace
+	}
+
+	// List all pods in the specified namespace
+	pods := ListPods(namespace)
 
 	// Find the pod by name
 	var uid string
@@ -72,7 +80,7 @@ func DeletePodByName(name string) bool {
 	}
 
 	if !found {
-		fmt.Printf("❌ Pod with name '%s' not found.\n", name)
+		fmt.Printf("❌ Pod with name '%s' not found in namespace '%s'.\n", name, namespace)
 		return false
 	}
 
@@ -88,19 +96,42 @@ func DeletePodByName(name string) bool {
 	}
 
 	// Delete the pod from Redis
-	key := fmt.Sprintf("pods:%s", uid)
-	err := own_redis.RedisClient.Del(own_redis.Ctx, key).Err() // Use redis.Ctx
+	key := fmt.Sprintf("pods:%s:%s", namespace, uid)
+	err := own_redis.RedisClient.Del(own_redis.Ctx, key).Err()
 	if err != nil {
-		fmt.Printf("❌ Failed to delete pod '%s': %v\n", name, err)
+		fmt.Printf("❌ Failed to delete pod '%s' in namespace '%s': %v\n", name, namespace, err)
 		return false
 	}
 
-	fmt.Printf("✅ Pod '%s' deleted successfully.\n", name)
+	fmt.Printf("✅ Pod '%s' deleted successfully from namespace '%s'.\n", name, namespace)
 	return true
 }
 
-func ListPods() []models.Pod {
-	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, "pods:*").Result()
+func ListAllPods() []models.Pod {
+	pattern := "pods:*" // Match all pods across all namespaces
+	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
+	if err != nil {
+		fmt.Printf("❌ Failed to list pods: %v\n", err)
+		return nil
+	}
+
+	var pods []models.Pod
+	for _, key := range keys {
+		value, _ := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+		var pod models.Pod
+		json.Unmarshal([]byte(value), &pod)
+		pods = append(pods, pod)
+	}
+	return pods
+}
+
+func ListPods(namespace string) []models.Pod {
+	if namespace == "" {
+		namespace = "default" // Default to 'default' namespace
+	}
+
+	pattern := fmt.Sprintf("pods:%s:*", namespace) // Match keys for the namespace
+	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
 	if err != nil {
 		fmt.Printf("❌ Failed to list pods: %v\n", err)
 		return nil
@@ -128,15 +159,6 @@ func DeletePod(uid string) bool {
 	// Stop the Docker container if it exists
 
 	return true
-}
-func ListNodes() []models.Node {
-	mu.Lock()
-	defer mu.Unlock()
-	nodes := []models.Node{}
-	for _, node := range nodeStore {
-		nodes = append(nodes, node)
-	}
-	return nodes
 }
 
 func AddNode(node models.Node) {
