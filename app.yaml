@@ -1,0 +1,30 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+  namespace: default
+  labels:
+    app: app
+spec:
+  containers:
+    - name: app
+      image: nginx
+      resources:
+        limits:
+          memory: "128Mi"
+          cpu: "0.5"
+---
+apiVersion: v1
+kind: Service
+name: my-service
+namespace: default
+selector:
+  app: app
+type: NodePort
+ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 0
+  - port: 443
+    targetPort: 80

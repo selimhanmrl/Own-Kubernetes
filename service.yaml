@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+name: my-service
+namespace: default
+selector:
+  app: app
+type: NodePort
+ports:
+  - port: 80
+    targetPort: 8080
+  - port: 443
+    targetPort: 80

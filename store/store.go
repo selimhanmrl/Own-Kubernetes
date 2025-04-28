@@ -40,6 +40,51 @@ func SavePod(pod models.Pod) {
 	fmt.Printf("✅ Pod '%s' saved to Redis in namespace '%s'.\n", pod.Metadata.Name, pod.Metadata.Namespace)
 }
 
+func SaveService(service models.Service) {
+	if own_redis.RedisClient == nil { // Use RedisClient from the redis package
+		log.Fatalf("❌ RedisClient is not initialized")
+	}
+
+	if service.Namespace == "" {
+		service.Namespace = "default" // Default to 'default' namespace
+	}
+
+	key := fmt.Sprintf("services:%s:%s", service.Namespace, service.Name) // Include namespace in the key
+	value, _ := json.Marshal(service)
+
+	err := own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
+	if err != nil {
+		fmt.Printf("❌ Failed to save service '%s': %v\n", service.Name, err)
+		return
+	}
+	fmt.Printf("✅ Service '%s' saved to Redis in namespace '%s'.\n", service.Name, service.Namespace)
+}
+
+func ListServices(namespace string) []models.Service {
+	if namespace == "" {
+		namespace = "default" // Default to 'default' namespace
+	}
+
+	pattern := fmt.Sprintf("services:%s:*", namespace) // Match keys for the namespace
+	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
+	if err != nil {
+		fmt.Printf("❌ Failed to list services: %v\n", err)
+		return nil
+	}
+
+	var services []models.Service
+	for _, key := range keys {
+		value, _ := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+		var service models.Service
+		json.Unmarshal([]byte(value), &service)
+		services = append(services, service)
+	}
+	return services
+}
+
+
+
+
 func GetPod(uid string) (models.Pod, bool) {
 	key := fmt.Sprintf("pods:%s", uid)
 	value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result() // Use redis.Ctx

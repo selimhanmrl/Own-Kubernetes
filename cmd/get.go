@@ -49,7 +49,11 @@ var getCmd = &cobra.Command{
 
 		// Create a tabular writer for output
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAMESPACE\tNAME\tREADY\tSTATUS\tRESTARTS\tAGE")
+		if allNamespaces {
+			fmt.Fprintln(w, "NAMESPACE\tNAME\tREADY\tSTATUS\tRESTARTS\tAGE\tRESOURCES")
+		} else {
+			fmt.Fprintln(w, "NAME\tREADY\tSTATUS\tRESTARTS\tAGE\tRESOURCES")
+		}
 
 		for _, pod := range pods {
 			ready := fmt.Sprintf("%d/%d", len(pod.Spec.Containers), len(pod.Spec.Containers)) // Assume all containers are ready
@@ -63,15 +67,38 @@ var getCmd = &cobra.Command{
 				}
 			}
 
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				pod.Metadata.Namespace,
-				pod.Metadata.Name,
-				ready,
-				pod.Status.Phase,
-				restarts,
-				age,
-			)
+			// Collect resource information
+			resourceInfo := ""
+			for _, container := range pod.Spec.Containers {
+				resourceInfo += fmt.Sprintf("[%s: Requests(cpu=%s, mem=%s), Limits(cpu=%s, mem=%s)] ",
+					container.Name,
+					container.Resources.Requests["cpu"],
+					container.Resources.Requests["memory"],
+					container.Resources.Limits["cpu"],
+					container.Resources.Limits["memory"],
+				)
+			}
 
+			if allNamespaces {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					pod.Metadata.Namespace,
+					pod.Metadata.Name,
+					ready,
+					pod.Status.Phase,
+					restarts,
+					age,
+					resourceInfo,
+				)
+			} else {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					pod.Metadata.Name,
+					ready,
+					pod.Status.Phase,
+					restarts,
+					age,
+					resourceInfo,
+				)
+			}
 		}
 
 		w.Flush()

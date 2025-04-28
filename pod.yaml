@@ -1,7 +1,17 @@
+apiVersion: v1
+kind: Pod
 metadata:
-  name: sleepy
+  name: app  
+  labels: # Add labels here
+    app: app
 spec:
   containers:
-    - name: nap
-      image: alpine
-      cmd: ["sleep", "1000"]
+    - name: app
+      image: nginx
+      resources:
+        requests:
+          memory: "64Mi"
+          cpu: "250m"
+        limits:
+          memory: "128Mi"
+          cpu: "500m"
