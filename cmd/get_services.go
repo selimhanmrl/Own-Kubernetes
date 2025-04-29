@@ -44,21 +44,21 @@ var getServicesCmd = &cobra.Command{
 
 		for _, service := range services {
 			ports := ""
-			for _, port := range service.Ports {
+			for _, port := range service.Spec.Ports {
 				ports += fmt.Sprintf("%d:%d ", port.Port, port.TargetPort)
 			}
 
 			if allNamespaces {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-					service.Namespace,
-					service.Name,
-					service.Type,
+					service.Metadata.Namespace,
+					service.Metadata.Name,
+					service.Spec.Type,
 					ports,
 				)
 			} else {
 				fmt.Fprintf(w, "%s\t%s\t%s\n",
-					service.Name,
-					service.Type,
+					service.Metadata.Name,
+					service.Spec.Type,
 					ports,
 				)
 			}

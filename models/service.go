@@ -1,15 +1,27 @@
 package models
 
 type Service struct {
-    Name      string            `json:"name" yaml:"name"`
-    Namespace string            `json:"namespace" yaml:"namespace"`
-    Selector  map[string]string `json:"selector" yaml:"selector"` // Match pods by labels
-    Type      string            `json:"type" yaml:"type"`         // ClusterIP or NodePort
-    Ports     []ServicePort     `json:"ports" yaml:"ports"`       // List of service ports
+	APIVersion string          `yaml:"apiVersion"`
+	Kind       string          `yaml:"kind"`
+	Metadata   ServiceMetadata `yaml:"metadata"`
+	Spec       ServiceSpec     `yaml:"spec"`
+}
+
+type ServiceMetadata struct {
+	Name        string            `yaml:"name"`
+	Namespace   string            `yaml:"namespace"`
+	Labels      map[string]string `yaml:"labels,omitempty"`
+	Annotations map[string]string `yaml:"annotations,omitempty"`
+}
+
+type ServiceSpec struct {
+	Type     string            `yaml:"type"`
+	Selector map[string]string `yaml:"selector"`
+	Ports    []ServicePort     `yaml:"ports"`
 }
 
 type ServicePort struct {
-    Port       int `json:"port" yaml:"port"`             // Service port
-    TargetPort int `json:"targetPort" yaml:"targetPort"` // Pod port
-    NodePort   int `json:"nodePort" yaml:"nodePort"`     // Node port (for NodePort services)
+	Port       int `yaml:"port"`
+	TargetPort int `yaml:"targetPort"`
+	NodePort   int `yaml:"nodePort,omitempty"`
 }

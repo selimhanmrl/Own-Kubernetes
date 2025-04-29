@@ -20,7 +20,7 @@ var (
 	}
 )
 
-func SavePod(pod models.Pod) {
+func SavePod(pod models.Pod) error {
 	if own_redis.RedisClient == nil { // Use RedisClient from the redis package
 		log.Fatalf("❌ RedisClient is not initialized")
 	}
@@ -30,34 +30,69 @@ func SavePod(pod models.Pod) {
 	}
 
 	key := fmt.Sprintf("pods:%s:%s", pod.Metadata.Namespace, pod.Metadata.UID) // Include namespace in the key
-	value, _ := json.Marshal(pod)
-
-	err := own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
+	value, err := json.Marshal(pod)
 	if err != nil {
-		fmt.Printf("❌ Failed to save pod '%s': %v\n", pod.Metadata.Name, err)
-		return
+		return fmt.Errorf("failed to marshal pod: %v", err)
 	}
+
+	err = own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
+	if err != nil {
+		return fmt.Errorf("failed to save pod '%s': %v", pod.Metadata.Name, err)
+	}
+
 	fmt.Printf("✅ Pod '%s' saved to Redis in namespace '%s'.\n", pod.Metadata.Name, pod.Metadata.Namespace)
+	return nil
 }
 
-func SaveService(service models.Service) {
+func SaveReplicaSet(rs models.ReplicaSet) error {
 	if own_redis.RedisClient == nil { // Use RedisClient from the redis package
 		log.Fatalf("❌ RedisClient is not initialized")
 	}
-
-	if service.Namespace == "" {
-		service.Namespace = "default" // Default to 'default' namespace
+	if rs.Metadata.Namespace == "" {
+		rs.Metadata.Namespace = "default" // Default to 'default' namespace
 	}
 
-	key := fmt.Sprintf("services:%s:%s", service.Namespace, service.Name) // Include namespace in the key
-	value, _ := json.Marshal(service)
+	key := fmt.Sprintf("replicaset:%s:%s", rs.Metadata.Namespace, rs.Metadata.Name)
 
-	err := own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
+	// Convert ReplicaSet to JSON
+	data, err := json.Marshal(rs)
 	if err != nil {
-		fmt.Printf("❌ Failed to save service '%s': %v\n", service.Name, err)
-		return
+		return fmt.Errorf("failed to marshal ReplicaSet: %v", err)
 	}
-	fmt.Printf("✅ Service '%s' saved to Redis in namespace '%s'.\n", service.Name, service.Namespace)
+
+	// Save to Redis
+	err = own_redis.RedisClient.Set(own_redis.Ctx, key, data, 0).Err()
+	if err != nil {
+		return fmt.Errorf("failed to save ReplicaSet to Redis: %v", err)
+	}
+
+	fmt.Printf("✅ ReplicaSet '%s' saved to Redis in namespace '%s'\n",
+		rs.Metadata.Name, rs.Metadata.Namespace)
+	return nil
+}
+
+func SaveService(service models.Service) error {
+	if own_redis.RedisClient == nil { // Use RedisClient from the redis package
+		return fmt.Errorf("❌ RedisClient is not initialized")
+	}
+
+	if service.Metadata.Namespace == "" {
+		service.Metadata.Namespace = "default" // Default to 'default' namespace
+	}
+
+	key := fmt.Sprintf("services:%s:%s", service.Metadata.Namespace, service.Metadata.Name) // Include namespace in the key
+	value, err := json.Marshal(service)
+	if err != nil {
+		return fmt.Errorf("failed to marshal service: %v", err)
+	}
+
+	err = own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
+	if err != nil {
+		return fmt.Errorf("❌ Failed to save service '%s': %v", service.Metadata.Name, err)
+	}
+
+	fmt.Printf("✅ Service '%s' saved to Redis in namespace '%s'.\n", service.Metadata.Name, service.Metadata.Namespace)
+	return nil
 }
 
 func ListServices(namespace string) []models.Service {
@@ -81,9 +116,6 @@ func ListServices(namespace string) []models.Service {
 	}
 	return services
 }
-
-
-
 
 func GetPod(uid string) (models.Pod, bool) {
 	key := fmt.Sprintf("pods:%s", uid)
