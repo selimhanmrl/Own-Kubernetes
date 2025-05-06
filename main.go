@@ -1,11 +1,15 @@
 package main
 
 import (
-	"github.com/selimhanmrl/Own-Kubernetes/cmd"
-	"github.com/selimhanmrl/Own-Kubernetes/redis" // Alias the package as 'store'
+    "github.com/selimhanmrl/Own-Kubernetes/redis"
+    "github.com/selimhanmrl/Own-Kubernetes/server"
 )
 
 func main() {
-	own_redis.InitRedis() // Use the alias 'store' here
-	cmd.Execute()
+    // Initialize Redis
+    own_redis.InitRedis()
+
+    // Create and start API server
+    apiServer := server.NewAPIServer()
+    apiServer.Start()
 }
