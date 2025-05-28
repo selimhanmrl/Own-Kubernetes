@@ -5,8 +5,8 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/selimhanmrl/Own-Kubernetes/client"
 	"github.com/selimhanmrl/Own-Kubernetes/models"
-	"github.com/selimhanmrl/Own-Kubernetes/store"
 	"github.com/spf13/cobra"
 )
 
@@ -14,15 +14,26 @@ var getServicesCmd = &cobra.Command{
 	Use:   "get services",
 	Short: "Get a list of services in a namespace or all namespaces",
 	Run: func(cmd *cobra.Command, args []string) {
+		c := client.NewClient(client.ClientConfig{
+			Host: apiHost,
+			Port: apiPort,
+		})
+
 		var services []models.Service
+		var err error
 
 		if allNamespaces {
-			services = store.ListServices("") // List all services across all namespaces
+			services, err = c.ListServices("")
 		} else {
 			if namespace == "" {
-				namespace = "default" // Default to 'default' namespace
+				namespace = "default"
 			}
-			services = store.ListServices(namespace)
+			services, err = c.ListServices(namespace)
+		}
+
+		if err != nil {
+			fmt.Printf("Failed to list services: %v\n", err)
+			return
 		}
 
 		if len(services) == 0 {

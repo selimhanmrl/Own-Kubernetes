@@ -2,180 +2,118 @@ package cmd
 
 import (
 	"fmt"
-	"os/exec"
-	"strconv"
-	"strings"
+	"math"
+	"time"
 
+	"github.com/selimhanmrl/Own-Kubernetes/client"
 	"github.com/selimhanmrl/Own-Kubernetes/models"
-	"github.com/selimhanmrl/Own-Kubernetes/store"
 	"github.com/spf13/cobra"
 )
 
 var schedulerCmd = &cobra.Command{
 	Use:   "scheduler",
-	Short: "Run the scheduler to assign pods to nodes and configure services",
+	Short: "Run the scheduler to assign pods to nodes",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Get all pods from all namespaces if no specific namespace is provided
-		var pods []models.Pod
-		if namespace != "" {
-			pods = store.ListPods(namespace)
-		} else {
-			pods = store.ListPods("")
+		fmt.Println("🎯 Starting scheduler...")
+
+		// Create client with Docker host connection
+		c := client.NewClient(client.ClientConfig{
+			Host: "localhost", // Connect to Docker host
+			Port: "8080",      // API server exposed port
+		})
+
+		// Wait for API server to be ready
+		fmt.Println("⌛ Waiting for API server...")
+		for {
+			_, err := c.ListNodes()
+			if err == nil {
+				break
+			}
+			fmt.Printf("🔄 Retrying connection to API server...\n")
+			time.Sleep(2 * time.Second)
 		}
 
-		if len(pods) == 0 {
-			fmt.Println("No pods found to schedule.")
+		fmt.Println("✅ Connected to API server")
+
+		// Get unscheduled pods
+		pods, err := c.ListPods("")
+		if err != nil {
+			fmt.Printf("❌ Failed to list pods: %v\n", err)
+			time.Sleep(5 * time.Second)
 			return
 		}
 
-		// Schedule all pending pods
+		// Get available nodes
+		nodes, err := c.ListNodes()
+		if err != nil {
+			fmt.Printf("❌ Failed to list nodes: %v\n", err)
+			time.Sleep(5 * time.Second)
+			return
+		}
+
+		if len(nodes) == 0 {
+			fmt.Println("⚠️ No nodes available for scheduling")
+			time.Sleep(5 * time.Second)
+			return
+		}
+
+		// Track node assignments for load balancing
+		nodeAssignments := make(map[string]int)
+		for _, node := range nodes {
+			nodeAssignments[node.Name] = len(node.Pods)
+		}
+
+		// Schedule pending pods
 		for _, pod := range pods {
-			if pod.Status.Phase != "Pending" {
-				fmt.Printf("⚠️ Pod '%s' in namespace '%s' is already scheduled. Skipping.\n",
-					pod.Metadata.Name, pod.Metadata.Namespace)
+			if pod.Status.Phase != "Pending" || pod.Spec.NodeName != "" {
 				continue
 			}
 
-			fmt.Printf("📦 Scheduling pod '%s' in namespace '%s'...\n",
-				pod.Metadata.Name, pod.Metadata.Namespace)
+			// Find suitable node
+			var selectedNode *models.Node
+			minPods := math.MaxInt32
 
-			// Generate a unique container name
-			containerName := fmt.Sprintf("%s-%s-%s",
-				pod.Metadata.Name, pod.Spec.Containers[0].Name, pod.Metadata.UID[:8])
-
-			// Extract and convert resource constraints
-			memoryLimit := pod.Spec.Containers[0].Resources.Limits["memory"]
-			cpuLimit := pod.Spec.Containers[0].Resources.Limits["cpu"]
-
-			// Convert memory limit from "Mi" to "m" if necessary
-			if strings.HasSuffix(memoryLimit, "Mi") {
-				memoryLimit = strings.Replace(memoryLimit, "Mi", "m", 1)
-			}
-			if strings.HasSuffix(memoryLimit, "Gi") {
-				memoryLimit = strings.Replace(memoryLimit, "Gi", "g", 1)
-			}
-
-			// Convert CPU limit
-			if strings.HasSuffix(cpuLimit, "m") {
-				cpuLimit = strings.Replace(cpuLimit, "m", "", 1)
-				cpuLimitInt, err := strconv.Atoi(cpuLimit)
-				if err != nil {
-					fmt.Printf("❌ Failed to parse CPU limit for pod '%s': %v\n",
-						pod.Metadata.Name, err)
-					continue
-				}
-				if cpuLimitInt > 1000 {
-					cpuLimitInt = cpuLimitInt / 1000
-				}
-				cpuLimit = fmt.Sprintf("%.2f", float64(cpuLimitInt)/1000)
-			}
-
-			// Build the Docker run command with resource constraints
-			args := []string{"run", "-d", "--name", containerName}
-			if memoryLimit != "" {
-				args = append(args, "--memory", memoryLimit)
-			}
-			if cpuLimit != "" {
-				args = append(args, "--cpus", cpuLimit)
-			}
-
-			// Look for matching services in the pod's namespace
-			services := store.ListServices(pod.Metadata.Namespace)
-			for _, service := range services {
-				// Skip services from different namespaces
-				if service.Metadata.Namespace != pod.Metadata.Namespace {
+			for _, node := range nodes {
+				if node.Status.Phase != "Ready" {
 					continue
 				}
 
-				// Check if pod labels match service selector
-				matches := true
-				for key, value := range service.Spec.Selector {
-					if pod.Metadata.Labels[key] != value {
-						matches = false
-						break
-					}
-				}
-
-				if matches {
-					fmt.Printf("🔗 Pod matches service '%s' in namespace '%s'\n",
-						service.Metadata.Name, service.Metadata.Namespace)
-
-					for _, port := range service.Spec.Ports {
-						if service.Spec.Type == "NodePort" {
-							usedPorts := getUsedPortsFromService(service)
-
-							// Always generate a new port for each pod
-							newPort := getRandomNodePort(usedPorts)
-							args = append(args, "-p", fmt.Sprintf("%d:%d", newPort, port.TargetPort))
-							fmt.Printf("📌 Assigned new NodePort %d for pod %s\n", newPort, pod.Metadata.Name)
-
-							// Update service annotations
-							annotationKey := fmt.Sprintf("nodeports.%d", port.Port)
-							portList := []string{}
-
-							// Parse existing ports
-							if portListStr, ok := service.Metadata.Annotations[annotationKey]; ok {
-								portListStr = strings.Trim(portListStr, "[]")
-								if portListStr != "" {
-									portList = strings.Split(portListStr, ",")
-								}
-							}
-
-							// Add new port
-							portList = append(portList, fmt.Sprintf("%d", newPort))
-
-							// Update annotation
-							service.Metadata.Annotations[annotationKey] = fmt.Sprintf("[%s]", strings.Join(portList, ","))
-							store.SaveService(service)
-						}
-					}
+				podsOnNode := nodeAssignments[node.Name]
+				if podsOnNode < minPods {
+					minPods = podsOnNode
+					selectedNode = &node
 				}
 			}
 
-			// Add container image and command
-			args = append(args, pod.Spec.Containers[0].Image)
-			if len(pod.Spec.Containers[0].Cmd) > 0 {
-				args = append(args, pod.Spec.Containers[0].Cmd...)
+			if selectedNode == nil {
+				fmt.Printf("⚠️ No suitable node found for pod '%s'\n", pod.Metadata.Name)
+				continue
 			}
 
-			// Start the container
-			fmt.Printf("Running command: docker %s\n", strings.Join(args, " "))
-			out, err := exec.Command("docker", args...).Output()
-			if err != nil {
-				fmt.Printf("❌ Failed to start container for pod '%s': %v\n",
-					pod.Metadata.Name, err)
-				pod.Status.Phase = "Failed"
-			} else {
-				pod.Status.Phase = "Running"
-				pod.Status.ContainerID = strings.TrimSpace(string(out))
-				fmt.Printf("✅ Successfully scheduled pod '%s' in namespace '%s'\n",
-					pod.Metadata.Name, pod.Metadata.Namespace)
+			fmt.Printf("📦 Scheduling pod '%s' to node '%s'...\n",
+				pod.Metadata.Name, selectedNode.Name)
+
+			// ONLY update pod assignment
+			pod.Spec.NodeName = selectedNode.Name
+			if err := c.UpdatePod(pod); err != nil {
+				fmt.Printf("❌ Failed to update pod: %v\n", err)
+				continue
 			}
 
-			// Save the updated pod back to the store
-			store.SavePod(pod)
+			nodeAssignments[selectedNode.Name]++
+			fmt.Printf("✅ Successfully assigned pod '%s' to node '%s'\n",
+				pod.Metadata.Name, selectedNode.Name)
 		}
+
+		time.Sleep(5 * time.Second) // Schedule check interval
+
 	},
 }
 
 func init() {
-	schedulerCmd.Flags().StringVarP(&namespace, "namespace", "n", "",
-		"Namespace to filter services and pods (optional)")
+	// Add configuration flags
+	schedulerCmd.Flags().StringVar(&apiHost, "api-host", "localhost", "API server hostname")
+	schedulerCmd.Flags().StringVar(&apiPort, "api-port", "8080", "API server port")
+	schedulerCmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Namespace to filter services and pods")
 	rootCmd.AddCommand(schedulerCmd)
-}
-
-// Add this helper function at the top of the file
-func getUsedPortsFromService(service models.Service) map[int]bool {
-	usedPorts := make(map[int]bool)
-	for _, port := range service.Spec.Ports {
-		if portListStr, ok := service.Metadata.Annotations[fmt.Sprintf("nodeports.%d", port.Port)]; ok {
-			portListStr = strings.Trim(portListStr, "[]")
-			for _, p := range strings.Split(portListStr, ",") {
-				if nodePort, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
-					usedPorts[nodePort] = true
-				}
-			}
-		}
-	}
-	return usedPorts
 }

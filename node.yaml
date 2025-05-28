@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Node
+metadata:
+  name: worker1
+spec:
+  ip: "192.168.1.10"
+  labels:
+    zone: us-east-1
+    type: worker
+status:
+  phase: Ready
+  capacity:
+    cpu: "4"
+    memory: "8Gi"

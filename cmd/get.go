@@ -7,8 +7,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/selimhanmrl/Own-Kubernetes/client"
 	"github.com/selimhanmrl/Own-Kubernetes/models"
-	"github.com/selimhanmrl/Own-Kubernetes/store"
 	"github.com/spf13/cobra"
 )
 
@@ -19,23 +19,26 @@ var getCmd = &cobra.Command{
 	Use:   "get pods",
 	Short: "Get a list of pods in a namespace or all namespaces",
 	Run: func(cmd *cobra.Command, args []string) {
+		c := client.NewClient(client.ClientConfig{
+			Host: apiHost,
+			Port: apiPort,
+		})
+
 		var pods []models.Pod
+		var err error
 
 		if allNamespaces {
-			// List all pods across all namespaces
-			pods = store.ListAllPods()
-
-			// Sort pods by namespace
-			sort.Slice(pods, func(i, j int) bool {
-				return pods[i].Metadata.Namespace < pods[j].Metadata.Namespace
-			})
+			pods, err = c.ListPods("")
 		} else {
-			// Default to 'default' namespace if no namespace is provided
 			if namespace == "" {
 				namespace = "default"
 			}
-			// List pods in the specified namespace
-			pods = store.ListPods(namespace)
+			pods, err = c.ListPods(namespace)
+		}
+
+		if err != nil {
+			fmt.Printf("Failed to list pods: %v\n", err)
+			return
 		}
 
 		if len(pods) == 0 {
@@ -47,6 +50,13 @@ var getCmd = &cobra.Command{
 			return
 		}
 
+		// Sort pods by namespace if listing all namespaces
+		if allNamespaces {
+			sort.Slice(pods, func(i, j int) bool {
+				return pods[i].Metadata.Namespace < pods[j].Metadata.Namespace
+			})
+		}
+
 		// Create a tabular writer for output
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		if allNamespaces {
@@ -56,8 +66,8 @@ var getCmd = &cobra.Command{
 		}
 
 		for _, pod := range pods {
-			ready := fmt.Sprintf("%d/%d", len(pod.Spec.Containers), len(pod.Spec.Containers)) // Assume all containers are ready
-			restarts := "0"                                                                   // Placeholder for restarts (not implemented yet)
+			ready := fmt.Sprintf("%d/%d", len(pod.Spec.Containers), len(pod.Spec.Containers))
+			restarts := "0"
 
 			age := "unknown"
 			if pod.Status.StartTime != "" {
@@ -67,7 +77,6 @@ var getCmd = &cobra.Command{
 				}
 			}
 
-			// Collect resource information
 			resourceInfo := ""
 			for _, container := range pod.Spec.Containers {
 				resourceInfo += fmt.Sprintf("[%s: Requests(cpu=%s, mem=%s), Limits(cpu=%s, mem=%s)] ",
