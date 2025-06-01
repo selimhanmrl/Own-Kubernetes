@@ -11,7 +11,7 @@ import (
 )
 
 var getServicesCmd = &cobra.Command{
-	Use:   "get services",
+	Use:   "get-services",
 	Short: "Get a list of services in a namespace or all namespaces",
 	Run: func(cmd *cobra.Command, args []string) {
 		c := client.NewClient(client.ClientConfig{

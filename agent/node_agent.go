@@ -11,15 +11,14 @@ import (
 	"github.com/selimhanmrl/Own-Kubernetes/models"
 )
 
-func findServicesForPod(pod *models.Pod, client *client.Client) []models.Service {
+func findServicesForPod(pod *models.Pod, client *client.Client) ([]models.Service, error) {
 	if pod.Metadata.Labels == nil {
-		return nil
+		return nil, nil
 	}
 
-	services, err := client.ListServices("")
+	services, err := client.ListServices(pod.Metadata.Namespace)
 	if err != nil {
-		fmt.Printf("❌ Failed to list services: %v\n", err)
-		return nil
+		return nil, fmt.Errorf("failed to list services: %v", err)
 	}
 
 	var matchingServices []models.Service
@@ -29,7 +28,7 @@ func findServicesForPod(pod *models.Pod, client *client.Client) []models.Service
 		}
 	}
 
-	return matchingServices
+	return matchingServices, nil
 }
 
 func matchLabels(podLabels, selector map[string]string) bool {
@@ -148,7 +147,7 @@ func (a *NodeAgent) monitorAndManagePods() {
 				fmt.Printf("🚀 Starting pod %s on node %s\n", pod.Metadata.Name, a.nodeName)
 
 				// Start the pod's containers
-				if err := a.startPod(&pod); err != nil {
+				if err := a.StartPod(&pod); err != nil {
 					fmt.Printf("❌ Failed to start pod %s: %v\n", pod.Metadata.Name, err)
 					continue
 				}
@@ -170,90 +169,104 @@ func (a *NodeAgent) monitorAndManagePods() {
 	}
 }
 
-func (a *NodeAgent) startPod(pod *models.Pod) error {
-	// Create unique names for containers
+func (a *NodeAgent) StartPod(pod *models.Pod) error {
+	fmt.Printf("🚀 Starting pod %s\n", pod.Metadata.Name)
+
+	pod.Status.HostIP = a.nodeIP
+
+	// Get matching services first
+	services, err := findServicesForPod(pod, a.client)
+	if err != nil {
+		fmt.Printf("⚠️ Warning: Failed to get services: %v\n", err)
+	}
+
+	fmt.Printf("🔍 Found %d matching services for pod\n", len(services))
 
 	for _, container := range pod.Spec.Containers {
-		containerName := pod.Metadata.Name
+		containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, container.Name)
 
-		// Get services that select this pod
-		services := findServicesForPod(pod, a.client)
-
-		// Check if container already exists and is running
-		if isContainerRunning(containerName) {
-			fmt.Printf("Container %s is already running\n", containerName)
+		// Check if container already exists
+		cmd := exec.Command("docker", "inspect", containerName)
+		if err := cmd.Run(); err == nil {
+			fmt.Printf("⚠️ Container %s already exists, skipping...\n", containerName)
 			continue
 		}
 
-		// Convert resource limits
-		memoryLimit := "512m" // default
-		cpuLimit := "1"       // default
+		// Defaults
+		memoryLimit := "512m"
+		cpuLimit := "1.0"
+
 		if container.Resources.Limits != nil {
 			if memory := container.Resources.Limits["memory"]; memory != "" {
 				if converted, err := convertMemoryToDockerFormat(memory); err == nil {
 					memoryLimit = converted
+					fmt.Printf("📦 Using memory limit: %s\n", memoryLimit)
+				} else {
+					fmt.Printf("⚠️ Memory conversion failed: %v\n", err)
 				}
 			}
 			if cpu := container.Resources.Limits["cpu"]; cpu != "" {
 				if converted, err := convertCPU(cpu); err == nil {
 					cpuLimit = converted
+					fmt.Printf("⚙️  Using CPU limit: %s\n", cpuLimit)
+				} else {
+					fmt.Printf("⚠️ CPU conversion failed: %v\n", err)
 				}
 			}
 		}
 
-		// Create container
 		args := []string{
 			"run", "-d",
 			"--name", containerName,
 			"--memory=" + memoryLimit,
-			"--memory-swap=" + memoryLimit, // Disable swap
 			"--cpus=" + cpuLimit,
-			"--pids-limit=100",                 // Limit number of processes
-			"--security-opt=no-new-privileges", // Restrict privileges
 		}
 
-		if len(services) > 0 {
-			fmt.Printf("📦 Found %d services for pod %s\n", len(services), pod.Metadata.Name)
-			for _, svc := range services {
-				for _, port := range svc.Spec.Ports {
-					if port.NodePort > 0 {
-						portMapping := fmt.Sprintf("%d:%d", port.NodePort, port.TargetPort)
-						args = append(args, "-p", portMapping)
-					}
+		// Track used ports to avoid conflicts
+		usedPorts := make(map[int]bool)
+
+		// Add NodePort mappings first
+		for _, svc := range services {
+			fmt.Printf("📦 Checking service: %s (type: %s)\n", svc.Metadata.Name, svc.Spec.Type)
+			if svc.Spec.Type == "NodePort" {
+				for _, svcPort := range svc.Spec.Ports {
+					// Bind to all interfaces for NodePort
+					portMapping := fmt.Sprintf("%d:%d", svcPort.NodePort, svcPort.TargetPort)
+					args = append(args, "-p", portMapping)
+					usedPorts[svcPort.NodePort] = true
+					fmt.Printf("🔗 Adding NodePort mapping %d:%d\n", svcPort.NodePort, svcPort.TargetPort)
+				}
+			}
+		}
+
+		// Add container ports if not already mapped
+		if container.Ports != nil {
+			for _, port := range container.Ports {
+				if !usedPorts[int(port.ContainerPort)] {
+					portMapping := fmt.Sprintf("%d:%d", port.ContainerPort, port.ContainerPort)
+					args = append(args, "-p", portMapping)
+					fmt.Printf("📡 Adding container port mapping %d\n", port.ContainerPort)
 				}
 			}
 		}
 
 		args = append(args, container.Image)
 
-		cmd := exec.Command("docker", args...)
+		fmt.Printf("🔧 Starting container with args: docker %s\n", strings.Join(args, " "))
+		cmd = exec.Command("docker", args...)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			pod.Status.Phase = "Failed"
-			a.client.UpdatePodStatus(pod)
-			return fmt.Errorf("failed to start container: %v, output: %s", err, string(output))
+			return fmt.Errorf("❌ Failed to start container: %v\nOutput: %s", err, string(output))
 		}
 
-		// Get container ID
-		containerId, err := getContainerId(containerName)
-		if err != nil {
-			fmt.Printf("Warning: Failed to get container ID: %v\n", err)
-		}
-
-		// Update pod status with container info
-		pod.Status.ContainerID = containerId
-		pod.Status.Phase = "Running"
-		pod.Status.HostIP = a.nodeIP
-		pod.Status.StartTime = time.Now().Format(time.RFC3339)
-
-		fmt.Printf("✅ Started container %s with ID %s\n", containerName, containerId)
+		fmt.Printf("✅ Started container %s\n", containerName)
 	}
 
-	// Update final pod status
+	pod.Status.Phase = "Running"
 	return a.client.UpdatePodStatus(pod)
 }
 
-func isContainerRunning(containerName string) bool {
-	cmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", containerName)
+func isContainerRunning(name string) bool {
+	cmd := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -388,4 +401,35 @@ func (a *NodeAgent) cleanupPod(podName string) error {
 	}
 
 	return nil
+}
+
+func (a *NodeAgent) ListPods() ([]models.Pod, error) {
+	// List pods assigned to this node
+	return a.client.ListPods(fmt.Sprintf("?fieldSelector=spec.nodeName=%s", a.nodeName))
+}
+
+func (a *NodeAgent) CleanupPod(podName string) error {
+	// Remove all containers for this pod
+	cmd := exec.Command("docker", "ps", "-q", "-f", fmt.Sprintf("name=%s", podName))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %v", err)
+	}
+
+	containerIDs := strings.Split(string(output), "\n")
+	for _, id := range containerIDs {
+		if id == "" {
+			continue
+		}
+		cmd := exec.Command("docker", "rm", "-f", id)
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("❌ Failed to remove container %s: %v\n", id, err)
+		}
+	}
+	return nil
+}
+
+// Add this method to NodeAgent struct
+func (a *NodeAgent) GetClient() *client.Client {
+	return a.client
 }

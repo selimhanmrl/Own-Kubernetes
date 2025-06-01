@@ -38,5 +38,12 @@ type Container struct {
 	Name      string               `json:"name"`
 	Image     string               `json:"image"`
 	Cmd       []string             `json:"cmd"`
-	Resources ResourceRequirements `json:"resources"` // Add resources field
+	Resources ResourceRequirements `json:"resources"`       // Add resources field
+	Ports     []ContainerPort      `json:"ports,omitempty"` // Add this field
+
+}
+type ContainerPort struct {
+	ContainerPort int32  `json:"containerPort"`
+	Protocol      string `json:"protocol,omitempty"`
+	HostPort      int32  `json:"hostPort,omitempty"`
 }

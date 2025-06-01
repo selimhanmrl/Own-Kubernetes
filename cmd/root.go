@@ -25,4 +25,5 @@ func init() {
 
 	rootCmd.AddCommand(applyCmd)
 	rootCmd.AddCommand(getCmd)
+	rootCmd.AddCommand(nodeServerCmd) // Add this line
 }

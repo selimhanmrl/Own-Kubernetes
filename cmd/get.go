@@ -60,9 +60,9 @@ var getCmd = &cobra.Command{
 		// Create a tabular writer for output
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		if allNamespaces {
-			fmt.Fprintln(w, "NAMESPACE\tNAME\tREADY\tSTATUS\tRESTARTS\tAGE\tRESOURCES")
+			fmt.Fprintln(w, "NAMESPACE\tNAME\tREADY\tSTATUS\tRESTARTS\tAGE\tNODEPORT\tRESOURCES")
 		} else {
-			fmt.Fprintln(w, "NAME\tREADY\tSTATUS\tRESTARTS\tAGE\tRESOURCES")
+			fmt.Fprintln(w, "NAME\tREADY\tSTATUS\tRESTARTS\tAGE\tNODEPORT\tRESOURCES")
 		}
 
 		for _, pod := range pods {
@@ -77,6 +77,12 @@ var getCmd = &cobra.Command{
 				}
 			}
 
+			// Get NodePort if assigned
+			nodePort := "-"
+			if port, exists := c.GetAssignedNodePort(pod.Metadata.Name); exists {
+				nodePort = fmt.Sprintf("%d", port)
+			}
+
 			resourceInfo := ""
 			for _, container := range pod.Spec.Containers {
 				resourceInfo += fmt.Sprintf("[%s: Requests(cpu=%s, mem=%s), Limits(cpu=%s, mem=%s)] ",
@@ -89,22 +95,24 @@ var getCmd = &cobra.Command{
 			}
 
 			if allNamespaces {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 					pod.Metadata.Namespace,
 					pod.Metadata.Name,
 					ready,
 					pod.Status.Phase,
 					restarts,
 					age,
+					nodePort,
 					resourceInfo,
 				)
 			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 					pod.Metadata.Name,
 					ready,
 					pod.Status.Phase,
 					restarts,
 					age,
+					nodePort,
 					resourceInfo,
 				)
 			}
