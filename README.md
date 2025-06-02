@@ -26,7 +26,11 @@ For Api-Server (Run in Docker)
 
     docker build -t api-server -f .\docker\server.Dockerfile . 
     docker run -d --name api-server -p 8080:8080 api-server
-   
+
+For ETCD
+
+    docker run -d --name etcd-redis -p 6379:6379 redis
+
 For Each Nodes (Kubelet)
     
     go run . node-server <Node-Name> --api-host <Api-Server IP> --api-port <Api-Server Port> --node-ip <Node Port>
