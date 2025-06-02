@@ -9,53 +9,31 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/selimhanmrl/Own-Kubernetes/client"
 	"github.com/selimhanmrl/Own-Kubernetes/models"
-	"github.com/selimhanmrl/Own-Kubernetes/proxy"
 	"github.com/selimhanmrl/Own-Kubernetes/store"
 )
 
 type APIServer struct {
-	router       *mux.Router
-	loadBalancer *proxy.LoadBalancer
-	proxyServer  *proxy.ProxyServer
-	client       *client.Client // HTTP client for making requests
+	router *mux.Router
+	proxy  *ProxyServer
 }
 
 func NewAPIServer() *APIServer {
-	lb := proxy.NewLoadBalancer()
 	server := &APIServer{
-		router:       mux.NewRouter(),
-		loadBalancer: lb,
-		proxyServer:  proxy.NewProxyServer(lb),
-		client:       client.NewClient(client.ClientConfig{Host: "localhost", Port: "8080"}),
+		router: mux.NewRouter(),
+		proxy:  NewProxyServer(),
 	}
-
-	// Add load balancer routes
-	server.router.HandleFunc("/api/v1/loadbalancer/services", server.loadBalancer.RegisterService).Methods("POST")
-	
-
+	// Start the proxy server
+	go server.proxy.Start()
 	return server
 }
 
 func (s *APIServer) Start() {
-	// Initialize components
-	lb := proxy.NewLoadBalancer()
-	proxyServer := proxy.NewProxyServer(lb)
-	serviceUpdater := proxy.NewServiceUpdater(s.client, lb)
-
-	// Start service updater
-	serviceUpdater.Start()
-
-	// Start proxy server on port 8080
-	go http.ListenAndServe(":8080", proxyServer)
-
 	s.setupRoutes()
 	log.Printf("✅ API Server starting on port 8080")
 	if err := http.ListenAndServe(":8080", s.router); err != nil {
 		log.Fatalf("❌ Failed to start server: %v", err)
 	}
-
 }
 
 func (s *APIServer) setupRoutes() {
@@ -188,6 +166,19 @@ func (s *APIServer) handleCreateService(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// After saving the service, register it with the proxy
+	pods := store.ListPods("") // Get all pods
+	matchingPods := []models.Pod{}
+
+	// Find matching pods based on service selector
+	for _, pod := range pods {
+		if matchLabels(pod.Metadata.Labels, service.Spec.Selector) {
+			matchingPods = append(matchingPods, pod)
+		}
+	}
+
+	s.proxy.RegisterService(&service, matchingPods)
+
 	respondJSON(w, http.StatusCreated, service)
 }
 
@@ -311,4 +302,13 @@ func (s *APIServer) handleUpdatePodStatus(w http.ResponseWriter, r *http.Request
 
 	fmt.Printf("✅ Successfully updated pod status\n")
 	respondJSON(w, http.StatusOK, existingPod)
+}
+
+func matchLabels(podLabels, serviceSelector map[string]string) bool {
+	for key, value := range serviceSelector {
+		if podValue, exists := podLabels[key]; !exists || podValue != value {
+			return false
+		}
+	}
+	return true
 }

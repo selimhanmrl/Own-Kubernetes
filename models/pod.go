@@ -16,11 +16,13 @@ type PodSpec struct {
 }
 
 type PodStatus struct {
-	Phase       string `json:"phase"` // Pending, Running, Failed
-	HostIP      string `json:"hostIP"`
-	PodIP       string `json:"podIP"`
-	StartTime   string `json:"startTime"`
-	ContainerID string `json:"containerID"`
+	Phase        string `json:"phase"` // Pending, Running, Failed
+	HostIP       string `json:"hostIP"`
+	PodIP        string `json:"podIP"`
+	StartTime    string `json:"startTime"`
+	ContainerID  string `json:"containerID"`
+    AssignedPort int    `json:"assignedPort"` // Make sure this is tagged
+
 }
 
 type Pod struct {

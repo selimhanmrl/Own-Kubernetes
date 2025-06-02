@@ -170,12 +170,27 @@ func (a *NodeAgent) monitorAndManagePods() {
 }
 
 func (a *NodeAgent) StartPod(pod *models.Pod) error {
-	fmt.Printf("🚀 Starting pod %s\n", pod.Metadata.Name)
-
+	fmt.Printf("🔄 Starting pod %s (initial AssignedPort: %d)\n",
+		pod.Metadata.Name, pod.Status.AssignedPort)
 	pod.Status.HostIP = a.nodeIP
+	fmt.Printf("📍 Setting pod HostIP to: %s\n", a.nodeIP)
+
+	if err := a.client.UpdatePodStatus(pod); err != nil {
+		fmt.Printf("⚠️ Failed to update pod's HostIP: %v\n", err)
+	}
+	// Get fresh pod data with retries
+
+	updatedPod, _ := a.client.GetPod(pod.Metadata.Name)
+	if updatedPod.Status.AssignedPort > 0 {
+		pod = updatedPod
+	}
 
 	// Get matching services first
 	services, err := findServicesForPod(pod, a.client)
+	fmt.Printf("🔍 Searching for services matching pod %s...\n", pod.Metadata.Name)
+	fmt.Printf("🔍 Found %d services for pod %s\n", len(services), pod.Metadata.Name)
+	fmt.Printf("🔍 Services: %v\n", services)
+
 	if err != nil {
 		fmt.Printf("⚠️ Warning: Failed to get services: %v\n", err)
 	}
@@ -183,8 +198,12 @@ func (a *NodeAgent) StartPod(pod *models.Pod) error {
 	fmt.Printf("🔍 Found %d matching services for pod\n", len(services))
 
 	for _, container := range pod.Spec.Containers {
-		containerName := fmt.Sprintf("%s-%s", pod.Metadata.Name, container.Name)
+		containerName := pod.Metadata.Name
 
+		if isContainerRunning(containerName) {
+			fmt.Printf("⚠️ Container %s already exists, skipping...\n", containerName)
+			continue
+		}
 		// Check if container already exists
 		cmd := exec.Command("docker", "inspect", containerName)
 		if err := cmd.Run(); err == nil {
@@ -223,33 +242,21 @@ func (a *NodeAgent) StartPod(pod *models.Pod) error {
 		}
 
 		// Track used ports to avoid conflicts
-		usedPorts := make(map[int]bool)
+		//usedPorts := make(map[int]bool)
 
 		// Add NodePort mappings first
 		for _, svc := range services {
-			fmt.Printf("📦 Checking service: %s (type: %s)\n", svc.Metadata.Name, svc.Spec.Type)
 			if svc.Spec.Type == "NodePort" {
-				for _, svcPort := range svc.Spec.Ports {
-					// Bind to all interfaces for NodePort
-					portMapping := fmt.Sprintf("%d:%d", svcPort.NodePort, svcPort.TargetPort)
-					args = append(args, "-p", portMapping)
-					usedPorts[svcPort.NodePort] = true
-					fmt.Printf("🔗 Adding NodePort mapping %d:%d\n", svcPort.NodePort, svcPort.TargetPort)
+				for _, port := range svc.Spec.Ports {
+					if pod.Status.AssignedPort > 0 && port.NodePort > 0 {
+						portMapping := fmt.Sprintf("%d:%d", pod.Status.AssignedPort, port.TargetPort)
+						args = append(args, "-p", portMapping)
+						fmt.Printf("🔌 Mapping assigned port %d -> target port %d\n",
+							pod.Status.AssignedPort, port.TargetPort)
+					}
 				}
 			}
 		}
-
-		// Add container ports if not already mapped
-		if container.Ports != nil {
-			for _, port := range container.Ports {
-				if !usedPorts[int(port.ContainerPort)] {
-					portMapping := fmt.Sprintf("%d:%d", port.ContainerPort, port.ContainerPort)
-					args = append(args, "-p", portMapping)
-					fmt.Printf("📡 Adding container port mapping %d\n", port.ContainerPort)
-				}
-			}
-		}
-
 		args = append(args, container.Image)
 
 		fmt.Printf("🔧 Starting container with args: docker %s\n", strings.Join(args, " "))

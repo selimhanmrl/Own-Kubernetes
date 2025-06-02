@@ -211,9 +211,10 @@ func (c *Client) cleanupPodFromNode(podName string, node *models.Node) error {
 	return nil
 }
 
-// Add helper method to get pod details
 func (c *Client) GetPod(name string) (*models.Pod, error) {
 	url := fmt.Sprintf("%s/api/v1/pods/%s", c.baseURL, name)
+	fmt.Printf("🔍 Getting pod details from: %s\n", url)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod: %v", err)
@@ -225,10 +226,14 @@ func (c *Client) GetPod(name string) (*models.Pod, error) {
 	}
 
 	var pod models.Pod
-	if err := json.NewDecoder(resp.Body).Decode(&pod); err != nil {
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Printf("📥 Received pod data: %s\n", string(body))
+
+	if err := json.Unmarshal(body, &pod); err != nil {
 		return nil, fmt.Errorf("failed to decode pod: %v", err)
 	}
 
+	fmt.Printf("📦 Pod %s has AssignedPort: %d\n", pod.Metadata.Name, pod.Status.AssignedPort)
 	return &pod, nil
 }
 
@@ -261,63 +266,60 @@ func (c *Client) CreateService(service models.Service) error {
 	if service.Spec.Type == "NodePort" {
 		fmt.Println("📡 Processing NodePort service...")
 
-		// Get matching pods
+		// This is the port that kube-proxy will listen on
+		proxyPort := service.Spec.Ports[0].NodePort
+		fmt.Printf("🔌 Service NodePort (proxy) will listen on: %d\n", proxyPort)
+
 		pods, err := c.ListPods("")
 		if err != nil {
 			return fmt.Errorf("failed to list pods: %v", err)
 		}
 
-		// Track used ports to ensure uniqueness
+		// Track used container ports
 		usedPorts := make(map[int]bool)
 		for _, port := range c.assignedPods {
 			usedPorts[port] = true
 		}
 
-		// First matching pod's port will be used for the service
-		var serviceNodePort int
-
-		// Find matching pods and assign unique NodePorts if needed
+		// Assign unique container ports for each matching pod
 		for _, pod := range pods {
 			if matchLabels(pod.Metadata.Labels, service.Spec.Selector) {
-				// Check if pod already has a NodePort
+				// Check if pod already has a container port
 				if existingPort, exists := c.assignedPods[pod.Metadata.Name]; exists {
-					if serviceNodePort == 0 {
-						serviceNodePort = existingPort
-					}
-					fmt.Printf("🔗 Pod '%s' already has NodePort %d\n", pod.Metadata.Name, existingPort)
+					fmt.Printf("🔗 Pod '%s' already has container port %d\n",
+						pod.Metadata.Name, existingPort)
 					continue
 				}
 
-				// Generate new unique NodePort
-				var nodePort int
+				// Generate new unique container port
+				var containerPort int
 				for {
-					nodePort = generateNodePort()
-					if !usedPorts[nodePort] {
+					containerPort = generateNodePort()
+					if !usedPorts[containerPort] {
 						break
 					}
 				}
 
-				// Assign the new port
-				usedPorts[nodePort] = true
-				c.assignedPods[pod.Metadata.Name] = nodePort
-				fmt.Printf("🔗 Pod '%s' assigned new NodePort %d\n", pod.Metadata.Name, nodePort)
-
-				if serviceNodePort == 0 {
-					serviceNodePort = nodePort
+				// Update pod status with assigned port
+				pod.Status.AssignedPort = containerPort
+				
+				// Update pod status in API server
+				if err := c.UpdatePodStatus(&pod); err != nil {
+					fmt.Printf("❌ Failed to update pod status: %v\n", err)
+					continue
 				}
+				fmt.Printf("✅ Updated pod %s with AssignedPort %d\n", pod.Metadata.Name, containerPort)
+
+				// Assign the new container port
+				usedPorts[containerPort] = true
+				c.assignedPods[pod.Metadata.Name] = containerPort
+				fmt.Printf("🔗 Pod '%s' will expose container port %d\n",
+					pod.Metadata.Name, containerPort)
 			}
 		}
 
-		// Set the NodePort for the service (using the first pod's port)
-		if serviceNodePort > 0 {
-			fmt.Printf("🔌 Assigned NodePort %d for port %d\n", serviceNodePort, service.Spec.Ports[0].Port)
-			service.Spec.Ports[0].NodePort = serviceNodePort
-		}
-
-		// Add service to load balancer
-		if err := c.registerServiceWithLoadBalancer(service); err != nil {
-			return fmt.Errorf("failed to register with load balancer: %v", err)
-		}
+		// The service's NodePort remains unchanged (used by kube-proxy)
+		fmt.Printf("🚀 kube-proxy will balance %d -> container ports\n", proxyPort)
 	}
 
 	// Create the service
@@ -455,12 +457,25 @@ func (c *Client) GetConfig() ClientConfig {
 // Add this method after other client methods
 func (c *Client) UpdatePodStatus(pod *models.Pod) error {
 	url := fmt.Sprintf("%s/api/v1/pods/%s/status", c.baseURL, pod.Metadata.Name)
-	fmt.Printf("🔄 Updating pod status: %s\n", url)
+	fmt.Printf("\n=== Updating Pod Status ===\n")
+	fmt.Printf("🔄 URL: %s\n", url)
+	fmt.Printf("📦 Pod: %s\n", pod.Metadata.Name)
+	fmt.Printf("🔌 Setting AssignedPort to: %d\n", pod.Status.AssignedPort)
 
+	    if pod.Spec.NodeName != "" && pod.Status.HostIP == "" {
+        node, err := c.GetNode(pod.Spec.NodeName)
+        if err == nil {
+            pod.Status.HostIP = node.IP
+            fmt.Printf("📍 Updated HostIP from node: %s\n", node.IP)
+        }
+    }
 	data, err := json.Marshal(pod)
 	if err != nil {
 		return fmt.Errorf("failed to marshal pod: %v", err)
 	}
+
+	// Print the actual JSON being sent
+	fmt.Printf("📤 Sending JSON: %s\n", string(data))
 
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(data))
 	if err != nil {
@@ -474,13 +489,23 @@ func (c *Client) UpdatePodStatus(pod *models.Pod) error {
 	}
 	defer resp.Body.Close()
 
-	// Read response body for error details
 	body, _ := ioutil.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("❌ Update failed: HTTP %d\n", resp.StatusCode)
+		fmt.Printf("❌ Response body: %s\n", string(body))
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	fmt.Printf("✅ Successfully updated pod status for %s\n", pod.Metadata.Name)
+	// Verify the update by getting the pod again
+	updatedPod, err := c.GetPod(pod.Metadata.Name)
+	if err != nil {
+		fmt.Printf("⚠️ Failed to verify update: %v\n", err)
+	} else {
+		fmt.Printf("✅ Verified pod status - AssignedPort: %d\n", updatedPod.Status.AssignedPort)
+	}
+
+	fmt.Printf("✅ Status update completed\n")
+	fmt.Println("========================")
 	return nil
 }
 
@@ -525,24 +550,17 @@ func (c *Client) loadNodePorts() error {
 	return json.Unmarshal(data, &c.assignedPods)
 }
 
-func (c *Client) registerServiceWithLoadBalancer(service models.Service) error {
-	url := fmt.Sprintf("%s/api/v1/loadbalancer/services", c.baseURL)
-	data, err := json.Marshal(service)
+func (c *Client) GetAssignedPort(podName string) (int, bool) {
+	pod, err := c.GetPod(podName)
 	if err != nil {
-		return fmt.Errorf("failed to marshal service for load balancer: %v", err)
+		return 0, false
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		return fmt.Errorf("failed to register service with load balancer: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("load balancer registration failed: %s - %s", resp.Status, string(body))
+	if pod.Status.AssignedPort > 0 {
+		return pod.Status.AssignedPort, true
 	}
 
-	fmt.Printf("✅ Service '%s' registered with load balancer successfully\n", service.Metadata.Name)
-	return nil
+	// Fallback to in-memory map
+	port, exists := c.assignedPods[podName]
+	return port, exists
 }

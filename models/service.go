@@ -21,7 +21,8 @@ type ServiceSpec struct {
 }
 
 type ServicePort struct {
-	Port       int `yaml:"port"`
-	TargetPort int `yaml:"targetPort"`
-	NodePort   int `yaml:"nodePort,omitempty"`
+	Port         int `yaml:"port"`
+	TargetPort   int `yaml:"targetPort"`
+	NodePort     int `yaml:"nodePort,omitempty"`
+	assignedPort int // Internal field to track assigned port
 }
