@@ -3,31 +3,44 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/selimhanmrl/Own-Kubernetes/store"
+	"github.com/selimhanmrl/Own-Kubernetes/client"
 	"github.com/spf13/cobra"
 )
 
+func getClient() *client.Client {
+	return client.NewClient(client.ClientConfig{
+		Host: apiHost,
+		Port: apiPort,
+	})
+}
+
 var deleteCmd = &cobra.Command{
-	Use:   "delete [pod-name]",
-	Short: "Delete a pod by its name",
-	Args:  cobra.ExactArgs(1), // Ensure exactly one argument is provided
+	Use:   "delete [resource] [name]",
+	Short: "Delete a resource",
+	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		name := args[0]
+		resourceType := args[0]
+		name := args[1]
 
-		if namespace == "" {
-			namespace = "default" // Default to 'default' namespace
-		}
+		client := getClient()
 
-		if store.DeletePodByName(name, namespace) {
-			fmt.Printf("✅ Pod with name '%s' deleted successfully from namespace '%s'.\n", name, namespace)
-		} else {
-			fmt.Printf("❌ Pod with name '%s' not found in namespace '%s'.\n", name, namespace)
+		switch resourceType {
+		case "pod":
+			if err := client.DeletePod("default", name); err != nil {
+				fmt.Printf("❌ Failed to delete pod: %v\n", err)
+				return
+			}
+			fmt.Printf("✅ Pod '%s' deleted successfully\n", name)
+		default:
+			fmt.Printf("❌ Unknown resource type: %s\n", resourceType)
 		}
 	},
 }
 
 func init() {
-	// Add namespace flag to the delete command
+	// Add api-host and api-port flags
+	deleteCmd.Flags().StringVar(&apiHost, "api-host", "localhost", "API server hostname")
+	deleteCmd.Flags().StringVar(&apiPort, "api-port", "8080", "API server port")
 	deleteCmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Namespace of the pod")
 	rootCmd.AddCommand(deleteCmd)
 }

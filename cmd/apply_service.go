@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/selimhanmrl/Own-Kubernetes/models"
-	"github.com/selimhanmrl/Own-Kubernetes/store"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +17,9 @@ var applyServiceCmd = &cobra.Command{
 	Use:   "apply-service",
 	Short: "Apply a YAML service definition",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Get API client
+		client := getClient()
+
 		data, err := os.ReadFile(serviceFile)
 		if err != nil {
 			fmt.Println("❌ Failed to read file:", err)
@@ -34,128 +35,79 @@ var applyServiceCmd = &cobra.Command{
 
 		// Set namespace if not provided
 		if service.Metadata.Namespace == "" {
-			if namespace != "" {
-				service.Metadata.Namespace = namespace
-			} else {
-				service.Metadata.Namespace = "default"
-			}
+			service.Metadata.Namespace = "default"
 		}
 
-		fmt.Printf("Selector: %v\n", service.Spec.Selector)
 		// Validate selector
 		if len(service.Spec.Selector) == 0 {
 			fmt.Println("❌ Service must have a selector")
 			return
 		}
-		// Modify the NodePort assignment section in applyServiceCmd
-		// Replace the NodePort section with this updated version:
-		if service.Spec.Type == "NodePort" {
-			usedPorts := getUsedNodePorts()
-			replicaPorts := make(map[int][]int)
 
-			// First, validate ports and assign base NodePorts
+		// Handle NodePort assignment
+		if service.Spec.Type == "NodePort" {
+			fmt.Println("📡 Processing NodePort service...")
+
+			// Get all existing services to check ports
+			services, err := client.ListServices("")
+			if err != nil {
+				fmt.Printf("❌ Failed to list services: %v\n", err)
+				return
+			}
+
+			// Track used ports
+			usedPorts := make(map[int]bool)
+			for _, svc := range services {
+				if svc.Spec.Type == "NodePort" {
+					for _, port := range svc.Spec.Ports {
+						if port.NodePort > 0 {
+							usedPorts[port.NodePort] = true
+						}
+					}
+				}
+			}
+
+			// Assign NodePorts if not specified
 			for i := range service.Spec.Ports {
 				port := &service.Spec.Ports[i]
 				if port.NodePort == 0 {
-					// Generate base NodePort for the service
-					baseNodePort := getRandomNodePort(usedPorts)
-					port.NodePort = baseNodePort
-					usedPorts[baseNodePort] = true
-
-					// Initialize empty ports array for this service port
-					replicaPorts[port.Port] = []int{}
+					// Find available port in range 30000-32767
+					port.NodePort = getAvailableNodePort(usedPorts)
+					fmt.Printf("🔌 Assigned NodePort %d for port %d\n",
+						port.NodePort, port.Port)
+				} else if port.NodePort < 30000 || port.NodePort > 32767 {
+					fmt.Printf("❌ Invalid NodePort %d: must be between 30000-32767\n",
+						port.NodePort)
+					return
 				}
-			}
-
-			// Initialize annotations if nil
-			if service.Metadata.Annotations == nil {
-				service.Metadata.Annotations = make(map[string]string)
-			}
-
-			// Get matching pods
-			pods := store.ListPods(service.Metadata.Namespace)
-			matchingPods := []models.Pod{}
-			for _, pod := range pods {
-				matches := true
-				for key, value := range service.Spec.Selector {
-					if pod.Metadata.Labels[key] != value {
-						matches = false
-						break
-					}
-				}
-				if matches {
-					matchingPods = append(matchingPods, pod)
-				}
-			}
-
-			fmt.Printf("Found %d matching pods\n", len(matchingPods))
-
-			// Generate ports for each service port
-			for i := range service.Spec.Ports {
-				port := &service.Spec.Ports[i]
-
-				if len(matchingPods) > 0 {
-					// Generate unique ports for each replica
-					ports := make([]int, len(matchingPods))
-					for j := range matchingPods {
-						newPort := getRandomNodePort(usedPorts)
-						ports[j] = newPort
-						usedPorts[newPort] = true
-					}
-
-					// Store ports for this service port
-					replicaPorts[port.Port] = ports
-
-					fmt.Printf("ℹ️ Assigned NodePorts for port %d:\n", port.Port)
-					for j, replicaPort := range ports {
-						fmt.Printf("  - %s: %d\n", matchingPods[j].Metadata.Name, replicaPort)
-					}
-				} else {
-					fmt.Printf("⚠️ No matching pods found for service port %d\n", port.Port)
-					replicaPorts[port.Port] = []int{port.NodePort}
-				}
-
-				// Store in annotations
-				portsStr := fmt.Sprintf("%v", replicaPorts[port.Port])
-				portsStr = strings.Trim(portsStr, "[]")
-				service.Metadata.Annotations[fmt.Sprintf("nodeports.%d", port.Port)] = fmt.Sprintf("[%s]", portsStr)
-			}
-
-			fmt.Printf("ℹ️ Storing NodePorts in service annotations:\n")
-			for port, ports := range replicaPorts {
-				fmt.Printf("Port %d -> %v\n", port, ports)
+				usedPorts[port.NodePort] = true
 			}
 		}
 
-		// Check for matching pods
-		pods := store.ListPods(service.Metadata.Namespace)
-		matchingPods := 0
-		for _, pod := range pods {
-			matches := true
-			for key, value := range service.Spec.Selector {
-				if pod.Metadata.Labels[key] != value {
-					matches = false
-					break
-				}
-			}
-			if matches {
-				matchingPods++
-			}
-			fmt.Println("Pod:", pod.Metadata.Name, "Matches:", matches)
-			fmt.Println("Service Annotations:", service.Metadata.Annotations)
-		}
-
-		fmt.Printf("ℹ️ Found %d matching pods for service '%s'\n",
-			matchingPods, service.Metadata.Name)
-
-		// Save the service
-		if err := store.SaveService(service); err != nil {
-			fmt.Printf("❌ Failed to save service: %v\n", err)
+		// Create service through API
+		fmt.Printf("📦 Creating service '%s'...\n", service.Metadata.Name)
+		if err := client.CreateService(service); err != nil {
+			fmt.Printf("❌ Failed to create service: %v\n", err)
 			return
 		}
 
-		fmt.Printf("✅ Service '%s' created successfully in namespace '%s'\n",
-			service.Metadata.Name, service.Metadata.Namespace)
+		fmt.Printf("✅ Service '%s' created successfully\n", service.Metadata.Name)
+
+		// List matching pods
+		pods, err := client.ListPods(service.Metadata.Namespace)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to list pods: %v\n", err)
+			return
+		}
+
+		matchCount := 0
+		for _, pod := range pods {
+			if matchLabels(pod.Metadata.Labels, service.Spec.Selector) {
+				matchCount++
+				//fmt.Printf("🔗 Pod '%s' matches service selector\n", pod.Metadata.Name)
+			}
+		}
+		fmt.Printf("ℹ️ Found %d matching pods\n", matchCount)
 	},
 }
 
@@ -166,39 +118,23 @@ func init() {
 	rootCmd.AddCommand(applyServiceCmd)
 }
 
-// getUsedNodePorts retrieves a map of all currently assigned NodePorts
-func getUsedNodePorts() map[int]bool {
-	usedPorts := make(map[int]bool)
-	services := store.ListServices("") // List all services across all namespaces
-	for _, service := range services {
-		for _, port := range service.Spec.Ports {
-			if service.Spec.Type == "NodePort" && port.NodePort > 0 {
-				usedPorts[port.NodePort] = true
-			}
-		}
-	}
-	return usedPorts
-}
-
-// getRandomNodePort generates a random NodePort that is not already in use
-func getRandomNodePort(usedPorts map[int]bool) int {
+// Helper function to get available NodePort
+func getAvailableNodePort(usedPorts map[int]bool) int {
 	rand.Seed(time.Now().UnixNano())
 	for {
-		port := rand.Intn(32767-30000+1) + 30000 // Generate a port in the range 30000-32767
+		port := rand.Intn(32767-30000+1) + 30000
 		if !usedPorts[port] {
 			return port
 		}
 	}
 }
 
-func generateReplicaPorts(baseNodePort int, replicas int, usedPorts map[int]bool) []int {
-	ports := make([]int, replicas)
-
-	// Generate unique ports for all replicas
-	for i := 0; i < replicas; i++ {
-		port := getRandomNodePort(usedPorts)
-		ports[i] = port
-		usedPorts[port] = true
+// Helper function to match labels
+func matchLabels(podLabels, selector map[string]string) bool {
+	for key, value := range selector {
+		if podLabels[key] != value {
+			return false
+		}
 	}
-	return ports
+	return true
 }

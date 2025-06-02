@@ -16,11 +16,13 @@ type PodSpec struct {
 }
 
 type PodStatus struct {
-	Phase       string `json:"phase"` // Pending, Running, Failed
-	HostIP      string `json:"hostIP"`
-	PodIP       string `json:"podIP"`
-	StartTime   string `json:"startTime"`
-	ContainerID string `json:"containerID"`
+	Phase        string `json:"phase"` // Pending, Running, Failed
+	HostIP       string `json:"hostIP"`
+	PodIP        string `json:"podIP"`
+	StartTime    string `json:"startTime"`
+	ContainerID  string `json:"containerID"`
+    AssignedPort int    `json:"assignedPort"` // Make sure this is tagged
+
 }
 
 type Pod struct {
@@ -38,5 +40,12 @@ type Container struct {
 	Name      string               `json:"name"`
 	Image     string               `json:"image"`
 	Cmd       []string             `json:"cmd"`
-	Resources ResourceRequirements `json:"resources"` // Add resources field
+	Resources ResourceRequirements `json:"resources"`       // Add resources field
+	Ports     []ContainerPort      `json:"ports,omitempty"` // Add this field
+
+}
+type ContainerPort struct {
+	ContainerPort int32  `json:"containerPort"`
+	Protocol      string `json:"protocol,omitempty"`
+	HostPort      int32  `json:"hostPort,omitempty"`
 }

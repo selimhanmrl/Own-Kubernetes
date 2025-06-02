@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-
-	"os/exec"
 	"sync"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis"
 	"github.com/selimhanmrl/Own-Kubernetes/models"
 	own_redis "github.com/selimhanmrl/Own-Kubernetes/redis"
 )
@@ -18,18 +16,50 @@ var (
 	nodeStore = []models.Node{
 		{Name: "node1", IP: "192.168.1.10"},
 	}
+	ipPool = &IPPool{
+		baseIP:     "192.168.1.",
+		startRange: 100,
+		endRange:   105,
+		usedIPs:    make(map[string]bool),
+	}
 )
 
+type IPPool struct {
+	baseIP     string
+	startRange int
+	endRange   int
+	usedIPs    map[string]bool
+	mu         sync.Mutex
+}
+
+func (p *IPPool) AssignIP(nodeName string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := p.startRange; i <= p.endRange; i++ {
+		ip := fmt.Sprintf("%s%d", p.baseIP, i)
+		if !p.usedIPs[ip] {
+			p.usedIPs[ip] = true
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("no available IPs in pool")
+}
+
 func SavePod(pod models.Pod) error {
-	if own_redis.RedisClient == nil { // Use RedisClient from the redis package
-		log.Fatalf("❌ RedisClient is not initialized")
+	if own_redis.RedisClient == nil {
+		return fmt.Errorf("RedisClient is not initialized")
 	}
 
 	if pod.Metadata.Namespace == "" {
-		pod.Metadata.Namespace = "default" // Default to 'default' namespace
+		pod.Metadata.Namespace = "default"
 	}
 
-	key := fmt.Sprintf("pods:%s:%s", pod.Metadata.Namespace, pod.Metadata.UID) // Include namespace in the key
+	// Use consistent key format: pods:{namespace}:{name}
+	key := fmt.Sprintf("pods:%s:%s", pod.Metadata.Namespace, pod.Metadata.Name)
+
+	fmt.Printf("💾 Saving pod to Redis with key: %s\n", key)
+
 	value, err := json.Marshal(pod)
 	if err != nil {
 		return fmt.Errorf("failed to marshal pod: %v", err)
@@ -37,10 +67,11 @@ func SavePod(pod models.Pod) error {
 
 	err = own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
 	if err != nil {
-		return fmt.Errorf("failed to save pod '%s': %v", pod.Metadata.Name, err)
+		return fmt.Errorf("failed to save pod: %v", err)
 	}
 
-	fmt.Printf("✅ Pod '%s' saved to Redis in namespace '%s'.\n", pod.Metadata.Name, pod.Metadata.Namespace)
+	fmt.Printf("✅ Pod '%s' saved to Redis in namespace '%s'\n",
+		pod.Metadata.Name, pod.Metadata.Namespace)
 	return nil
 }
 
@@ -72,6 +103,15 @@ func SaveReplicaSet(rs models.ReplicaSet) error {
 }
 
 func SaveService(service models.Service) error {
+	if service.Spec.Type == "NodePort" {
+		// Auto-assign NodePort if not specified
+		for i := range service.Spec.Ports {
+			if service.Spec.Ports[i].NodePort == 0 {
+				service.Spec.Ports[i].NodePort = generateNodePort()
+			}
+		}
+	}
+
 	if own_redis.RedisClient == nil { // Use RedisClient from the redis package
 		return fmt.Errorf("❌ RedisClient is not initialized")
 	}
@@ -95,93 +135,32 @@ func SaveService(service models.Service) error {
 	return nil
 }
 
-func ListServices(namespace string) []models.Service {
-	if namespace == "" {
-		namespace = "default" // Default to 'default' namespace
+func GetPod(name string) (models.Pod, bool) {
+	if name == "" {
+		return models.Pod{}, false
 	}
 
-	pattern := fmt.Sprintf("services:%s:*", namespace) // Match keys for the namespace
-	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
-	if err != nil {
-		fmt.Printf("❌ Failed to list services: %v\n", err)
-		return nil
-	}
+	// Use consistent key format
+	key := fmt.Sprintf("pods:default:%s", name)
+	fmt.Printf("🔍 Looking up pod with key: %s\n", key)
 
-	var services []models.Service
-	for _, key := range keys {
-		value, _ := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
-		var service models.Service
-		json.Unmarshal([]byte(value), &service)
-		services = append(services, service)
-	}
-	return services
-}
-
-func GetPod(uid string) (models.Pod, bool) {
-	key := fmt.Sprintf("pods:%s", uid)
-	value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result() // Use redis.Ctx
+	value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
 	if err == redis.Nil {
-		return models.Pod{}, false // Pod not found
+		fmt.Printf("❌ Pod '%s' not found\n", name)
+		return models.Pod{}, false
 	} else if err != nil {
-		fmt.Printf("❌ Failed to get pod '%s': %v\n", uid, err)
+		fmt.Printf("❌ Error getting pod '%s': %v\n", name, err)
 		return models.Pod{}, false
 	}
 
 	var pod models.Pod
-	json.Unmarshal([]byte(value), &pod)
+	if err := json.Unmarshal([]byte(value), &pod); err != nil {
+		fmt.Printf("❌ Error unmarshaling pod '%s': %v\n", name, err)
+		return models.Pod{}, false
+	}
+
+	fmt.Printf("✅ Found pod '%s'\n", name)
 	return pod, true
-}
-
-func DeletePodByName(name string, namespace string) bool {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if namespace == "" {
-		namespace = "default" // Default to 'default' namespace
-	}
-
-	// List all pods in the specified namespace
-	pods := ListPods(namespace)
-
-	// Find the pod by name
-	var uid string
-	var pod models.Pod
-	found := false
-	for _, p := range pods {
-		if p.Metadata.Name == name {
-			uid = p.Metadata.UID
-			pod = p
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		fmt.Printf("❌ Pod with name '%s' not found in namespace '%s'.\n", name, namespace)
-		return false
-	}
-
-	// Stop the Docker container using the ContainerID
-	if pod.Status.Phase == "Running" && pod.Status.ContainerID != "" {
-		fmt.Printf("Stopping container with ID '%s'...\n", pod.Status.ContainerID)
-		err := exec.Command("docker", "stop", pod.Status.ContainerID).Run()
-		if err != nil {
-			fmt.Printf("❌ Failed to stop container '%s': %v\n", pod.Status.ContainerID, err)
-		} else {
-			fmt.Printf("✅ Stopped container with ID '%s'.\n", pod.Status.ContainerID)
-		}
-	}
-
-	// Delete the pod from Redis
-	key := fmt.Sprintf("pods:%s:%s", namespace, uid)
-	err := own_redis.RedisClient.Del(own_redis.Ctx, key).Err()
-	if err != nil {
-		fmt.Printf("❌ Failed to delete pod '%s' in namespace '%s': %v\n", name, namespace, err)
-		return false
-	}
-
-	fmt.Printf("✅ Pod '%s' deleted successfully from namespace '%s'.\n", name, namespace)
-	return true
 }
 
 func ListAllPods() []models.Pod {
@@ -204,10 +183,13 @@ func ListAllPods() []models.Pod {
 
 func ListPods(namespace string) []models.Pod {
 	if namespace == "" {
-		namespace = "default" // Default to 'default' namespace
+		namespace = "default"
 	}
 
-	pattern := fmt.Sprintf("pods:%s:*", namespace) // Match keys for the namespace
+	// Use consistent key pattern
+	pattern := fmt.Sprintf("pods:%s:*", namespace)
+	fmt.Printf("🔍 Listing pods with pattern: %s\n", pattern)
+
 	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
 	if err != nil {
 		fmt.Printf("❌ Failed to list pods: %v\n", err)
@@ -216,32 +198,146 @@ func ListPods(namespace string) []models.Pod {
 
 	var pods []models.Pod
 	for _, key := range keys {
-		value, _ := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+		value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+		if err != nil {
+			fmt.Printf("❌ Error getting pod for key '%s': %v\n", key, err)
+			continue
+		}
+
 		var pod models.Pod
-		json.Unmarshal([]byte(value), &pod)
+		if err := json.Unmarshal([]byte(value), &pod); err != nil {
+			fmt.Printf("❌ Error unmarshaling pod for key '%s': %v\n", key, err)
+			continue
+		}
 		pods = append(pods, pod)
 	}
+
+	fmt.Printf("✅ Found %d pods in namespace '%s'\n", len(pods), namespace)
 	return pods
 }
 
-// DeletePodByName deletes a pod by its name and stops the corresponding Docker container if it exists.
-func DeletePod(uid string) bool {
-	key := fmt.Sprintf("pods:%s", uid)
+func DeletePod(namespace, name string) error {
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	// Get pod before deleting to get container info
+	pod, found := GetPod(name)
+	if !found {
+		return fmt.Errorf("pod '%s' not found in namespace '%s'", name, namespace)
+	}
+
+	// Get the worker node where the pod is running
+	nodeName := pod.Spec.NodeName
+	if nodeName != "" {
+		// Publish deletion event for the node agent
+		event := map[string]string{
+			"type":     "delete",
+			"podName":  name,
+			"nodeName": nodeName,
+		}
+		eventData, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("failed to marshal deletion event: %v", err)
+		}
+
+		err = own_redis.RedisClient.Publish(own_redis.Ctx, "pod:events", string(eventData)).Err()
+		if err != nil {
+			return fmt.Errorf("failed to publish deletion event: %v", err)
+		}
+	}
+
+	// Delete from Redis
+	key := fmt.Sprintf("pods:%s:%s", namespace, name)
 	err := own_redis.RedisClient.Del(own_redis.Ctx, key).Err()
 	if err != nil {
-		fmt.Printf("❌ Failed to delete pod '%s': %v\n", uid, err)
-		return false
+		return fmt.Errorf("failed to delete pod: %v", err)
 	}
-	fmt.Printf("✅ Pod '%s' deleted from Redis.\n", uid)
-	// Stop the Docker container if it exists
 
-	return true
+	fmt.Printf("✅ Pod '%s' deleted from store\n", name)
+	return nil
 }
 
-func AddNode(node models.Node) {
-	mu.Lock()
-	defer mu.Unlock()
-	nodeStore = append(nodeStore, node) // Append the new node to the slice
+func SaveNode(node models.Node) error {
+	if own_redis.RedisClient == nil {
+		return fmt.Errorf("RedisClient is not initialized")
+	}
+
+	// Assign IP from pool if not set
+	if node.IP == "" {
+		ip, err := ipPool.AssignIP(node.Name)
+		if err != nil {
+			return fmt.Errorf("failed to assign IP to node: %v", err)
+		}
+		node.IP = ip
+	}
+
+	key := fmt.Sprintf("nodes:%s", node.Name)
+	value, err := json.Marshal(node)
+	if err != nil {
+		return fmt.Errorf("failed to marshal node: %v", err)
+	}
+
+	err = own_redis.RedisClient.Set(own_redis.Ctx, key, value, 0).Err()
+	if err != nil {
+		return fmt.Errorf("failed to save node: %v", err)
+	}
+
+	fmt.Printf("✅ Node '%s' registered with IP %s\n", node.Name, node.IP)
+	return nil
+}
+
+func UpdateNodeStatus(nodeName string, status models.NodeStatus) error {
+	if own_redis.RedisClient == nil {
+		return fmt.Errorf("RedisClient is not initialized")
+	}
+
+	key := fmt.Sprintf("nodes:%s", nodeName)
+	value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("failed to get node '%s': %v", nodeName, err)
+	}
+
+	var node models.Node
+	if err := json.Unmarshal([]byte(value), &node); err != nil {
+		return fmt.Errorf("failed to unmarshal node: %v", err)
+	}
+
+	node.Status = status
+	return SaveNode(node)
+}
+
+func ListNodes() []models.Node {
+	if own_redis.RedisClient == nil {
+		fmt.Printf("❌ RedisClient is not initialized\n")
+		return nil
+	}
+
+	pattern := "nodes:*"
+	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
+	if err != nil {
+		fmt.Printf("❌ Failed to list nodes: %v\n", err)
+		return nil
+	}
+
+	var nodes []models.Node
+	for _, key := range keys {
+		value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+		if err != nil {
+			fmt.Printf("❌ Failed to get node: %v\n", err)
+			continue
+		}
+
+		var node models.Node
+		if err := json.Unmarshal([]byte(value), &node); err != nil {
+			fmt.Printf("❌ Failed to unmarshal node: %v\n", err)
+			continue
+		}
+
+		nodes = append(nodes, node)
+	}
+
+	return nodes
 }
 
 func PublishEvent(eventType, podName string) {
@@ -260,4 +356,108 @@ func WatchPods() {
 	for msg := range sub.Channel() {
 		fmt.Printf("🔄 Event received: %s\n", msg.Payload)
 	}
+}
+
+func generateNodePort() int {
+	// NodePort range is typically 30000-32767
+	min := 30000
+	max := 32767
+
+	// Get existing services to check used ports
+	services := ListServices("")
+	usedPorts := make(map[int]bool)
+
+	for _, svc := range services {
+		for _, port := range svc.Spec.Ports {
+			if port.NodePort != 0 {
+				usedPorts[port.NodePort] = true
+			}
+		}
+	}
+
+	// Find first available port
+	for port := min; port <= max; port++ {
+		if !usedPorts[port] {
+			return port
+		}
+	}
+
+	return min // Fallback to minimum port
+}
+
+func ListServices(namespace string) []models.Service {
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	pattern := fmt.Sprintf("services:%s:*", namespace)
+	keys, err := own_redis.RedisClient.Keys(own_redis.Ctx, pattern).Result()
+	if err != nil {
+		fmt.Printf("❌ Failed to list services: %v\n", err)
+		return nil
+	}
+
+	var services []models.Service
+	for _, key := range keys {
+		value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+		if err != nil {
+			fmt.Printf("❌ Error getting service for key '%s': %v\n", key, err)
+			continue
+		}
+
+		var service models.Service
+		if err := json.Unmarshal([]byte(value), &service); err != nil {
+			fmt.Printf("❌ Error unmarshaling service for key '%s': %v\n", key, err)
+			continue
+		}
+		services = append(services, service)
+	}
+
+	fmt.Printf("✅ Found %d services in namespace '%s'\n", len(services), namespace)
+	return services
+}
+
+func findServicesForPod(pod *models.Pod) []models.Service {
+	if pod.Metadata.Labels == nil {
+		return nil
+	}
+
+	services := ListServices(pod.Metadata.Namespace)
+	var matchingServices []models.Service
+
+	for _, svc := range services {
+		if matchLabels(pod.Metadata.Labels, svc.Spec.Selector) {
+			matchingServices = append(matchingServices, svc)
+		}
+	}
+
+	return matchingServices
+}
+
+func matchLabels(podLabels, selector map[string]string) bool {
+	if selector == nil {
+		return false
+	}
+
+	for k, v := range selector {
+		if podLabels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func GetNodeIP(nodeName string) (string, error) {
+	key := fmt.Sprintf("nodes:%s", nodeName)
+	value, err := own_redis.RedisClient.Get(own_redis.Ctx, key).Result()
+	if err != nil {
+		return "", fmt.Errorf("node not found: %v", err)
+	}
+
+	var node models.Node
+	if err := json.Unmarshal([]byte(value), &node); err != nil {
+		return "", fmt.Errorf("failed to unmarshal node: %v", err)
+	}
+
+	return node.IP, nil
 }

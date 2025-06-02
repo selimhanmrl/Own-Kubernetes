@@ -1,13 +1,15 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: app  
-  labels: # Add labels here
-    app: app
+  name: app
+  labels:
+    app: nginx    # Changed to match service selector
 spec:
   containers:
     - name: app
       image: nginx
+      ports:
+        - containerPort: 80  # Added to expose nginx port
       resources:
         requests:
           memory: "64Mi"
